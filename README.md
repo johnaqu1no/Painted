@@ -61,7 +61,13 @@ Questions and help: open a
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[PolyForm Noncommercial 1.0.0](LICENSE).
+
+Free for any noncommercial purpose — personal work, hobby projects, study,
+charities, schools. Build it yourself, change it, pass those changes on; the
+terms travel with the copy. Using Sketchy to make money, inside a company or
+freelance, needs a commercial licence, which is what buying a build gets you:
+<https://sketchy.tools>.
 
 ## Credits
 
