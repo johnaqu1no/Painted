@@ -30,6 +30,8 @@ final class CanvasView: NSView {
     private var antsPhase: CGFloat = 0
     private var antsTimer: Timer?
     private var cachedComposite: CGImage?
+    private var cachedRegion: CGRect = .null
+    private var cachedScale: CGFloat = 0
     private var compositeDirty = true
     private var panOrigin: NSPoint?
 
@@ -43,12 +45,20 @@ final class CanvasView: NSView {
         layer?.backgroundColor = NSColor(calibratedWhite: 0.16, alpha: 1).cgColor
         engine.onNeedsDisplay = { [weak self] in self?.refresh() }
         document.onChange = { [weak self] in self?.refresh() }
+        // Scrolling changes which slice of the document is on screen.
+        NotificationCenter.default.addObserver(self, selector: #selector(viewportMoved),
+                                               name: NSView.boundsDidChangeNotification, object: nil)
         startAnts()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     deinit { antsTimer?.invalidate() }
+
+    @objc private func viewportMoved(_ note: Notification) {
+        guard let clip = note.object as? NSClipView, clip === enclosingScrollView?.contentView else { return }
+        needsDisplay = true
+    }
 
     override var isFlipped: Bool { false }
     override var acceptsFirstResponder: Bool { true }
@@ -106,6 +116,17 @@ final class CanvasView: NSView {
         zoom = max(0.05, min(sx, sy))
     }
 
+    /// The part of the document currently on screen, in image coordinates,
+    /// rounded outwards so partial pixels are not clipped.
+    private func visibleImageRect(in imageRect: CGRect) -> CGRect {
+        let visible = enclosingScrollView?.documentVisibleRect ?? bounds
+        let region = CGRect(x: (visible.minX - imageRect.minX) / zoom,
+                            y: (visible.minY - imageRect.minY) / zoom,
+                            width: visible.width / zoom,
+                            height: visible.height / zoom)
+        return region.insetBy(dx: -1, dy: -1).integral.intersection(document.bounds)
+    }
+
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
@@ -116,13 +137,31 @@ final class CanvasView: NSView {
         let r = imageRect
         drawCheckerboard(in: r, cell: 8)
 
-        if compositeDirty || cachedComposite == nil {
-            cachedComposite = document.composite()
+        // Only the visible slice of the document is composited, at the size it
+        // is about to be drawn. A 20000 x 20000 canvas then costs the same to
+        // redraw as a small one.
+        let visibleInImage = visibleImageRect(in: r)
+        let backingScale = window?.backingScaleFactor ?? 2
+        let pixelScale = min(zoom, 1) * backingScale
+        if compositeDirty || cachedComposite == nil
+            || cachedRegion != visibleInImage || cachedScale != pixelScale {
+            let pixelSize = CGSize(width: visibleInImage.width * pixelScale,
+                                   height: visibleInImage.height * pixelScale)
+            cachedComposite = document.composite(region: visibleInImage, pixelSize: pixelSize)
+            cachedRegion = visibleInImage
+            cachedScale = pixelScale
             compositeDirty = false
         }
         ctx.saveGState()
         ctx.interpolationQuality = zoom >= 1 ? .none : .high
-        if let img = cachedComposite { ctx.draw(img, in: r) }
+        if let img = cachedComposite {
+            // Draw the slice back where it came from.
+            let onScreen = CGRect(x: r.minX + visibleInImage.minX * zoom,
+                                  y: r.minY + visibleInImage.minY * zoom,
+                                  width: visibleInImage.width * zoom,
+                                  height: visibleInImage.height * zoom)
+            ctx.draw(img, in: onScreen)
+        }
         ctx.restoreGState()
 
         // Tool overlay + selection are drawn in image space.

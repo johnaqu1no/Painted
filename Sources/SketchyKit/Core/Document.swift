@@ -161,7 +161,28 @@ final class Document {
     // MARK: - Compositing
 
     func composite() -> CGImage? {
-        let ctx = Layer.makeContext(width: width, height: height)
+        composite(region: bounds, pixelSize: size)
+    }
+
+    /// Composites just `region` of the image into a buffer of `pixelSize`.
+    /// The canvas only ever asks for what is on screen at the size it will be
+    /// drawn, so a redraw costs screen pixels rather than canvas pixels — the
+    /// difference between megabytes and gigabytes on a large document.
+    func composite(region: CGRect, pixelSize: CGSize) -> CGImage? {
+        let clipped = region.intersection(bounds)
+        guard !clipped.isEmpty else { return nil }
+
+        let pixelWidth = max(1, Int(pixelSize.width.rounded()))
+        let pixelHeight = max(1, Int(pixelSize.height.rounded()))
+        let ctx = Layer.makeContext(width: pixelWidth, height: pixelHeight)
+
+        // Map the requested region onto the buffer.
+        let scaleX = CGFloat(pixelWidth) / clipped.width
+        let scaleY = CGFloat(pixelHeight) / clipped.height
+        ctx.scaleBy(x: scaleX, y: scaleY)
+        ctx.translateBy(x: -clipped.minX, y: -clipped.minY)
+        ctx.interpolationQuality = scaleX < 1 ? .medium : .none
+
         for layer in layers where layer.isVisible && layer.opacity > 0 {
             guard let img = layer.image else { continue }
             ctx.saveGState()
@@ -321,6 +342,49 @@ final class Document {
         selectionPath = CGPath(rect: destination, transform: nil)
         commit("Paste")
         return destination
+    }
+
+    // MARK: - Size limits
+
+    /// Whether a canvas of a given size is something this Mac can work with.
+    /// Layers are flat bitmaps, so the arithmetic is honest and worth checking
+    /// before a document is created rather than crashing inside an allocation.
+    enum SizeVerdict: Equatable {
+        case fine
+        /// Allowed, but worth warning about first. Bytes are the working set.
+        case heavy(bytes: Int)
+        case tooLarge(reason: String)
+    }
+
+    /// Largest side a bitmap context handles comfortably.
+    static let maximumSide = 32_000
+
+    static func bytesNeeded(width: Int, height: Int, layers: Int = 1) -> Int {
+        // Four bytes a pixel per layer, and one more canvas for compositing.
+        width * height * 4 * (max(1, layers) + 1)
+    }
+
+    static func verdict(width: Int, height: Int, layers: Int = 1,
+                        physicalMemory: Int = Int(ProcessInfo.processInfo.physicalMemory)) -> SizeVerdict {
+        guard width > 0, height > 0 else {
+            return .tooLarge(reason: "Width and height must be at least 1 pixel.")
+        }
+        guard width <= maximumSide, height <= maximumSide else {
+            return .tooLarge(reason: "Each side can be at most \(maximumSide) pixels.")
+        }
+
+        let bytes = bytesNeeded(width: width, height: height, layers: layers)
+        // Two fifths of the machine is where editing stops being viable; a
+        // sixth is where it stops being comfortable.
+        if bytes > physicalMemory * 2 / 5 {
+            let gigabytes = Double(bytes) / 1_000_000_000
+            return .tooLarge(reason: String(format: "That needs about %.1f GB, more than this Mac can work with.",
+                                            gigabytes))
+        }
+        if bytes > physicalMemory / 6 {
+            return .heavy(bytes: bytes)
+        }
+        return .fine
     }
 
     /// What to do when pasted pixels do not fit the canvas.
@@ -494,16 +558,22 @@ final class Document {
               let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
             throw DocumentError.decodeFailed
         }
+        if case .tooLarge(let reason) = verdict(width: img.width, height: img.height) {
+            throw DocumentError.tooLarge(reason)
+        }
         return Document(image: img, url: url)
     }
 }
 
 enum DocumentError: Error, LocalizedError {
     case encodeFailed, decodeFailed
+    case tooLarge(String)
+
     var errorDescription: String? {
         switch self {
         case .encodeFailed: return "Sketchy could not encode that image format."
         case .decodeFailed: return "Sketchy could not read that file."
+        case .tooLarge(let reason): return "That image is too large to open. \(reason)"
         }
     }
 }

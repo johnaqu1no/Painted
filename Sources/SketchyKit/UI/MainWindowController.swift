@@ -415,6 +415,36 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         }
     }
 
+    /// Checks a proposed canvas size before anything is allocated. Returns
+    /// false when the size is refused, or when the user backs out of a size
+    /// big enough to be worth a warning.
+    func approveCanvasSize(width: Int, height: Int, layers: Int = 1) -> Bool {
+        switch Document.verdict(width: width, height: height, layers: layers) {
+        case .fine:
+            return true
+
+        case .heavy(let bytes):
+            let alert = NSAlert()
+            alert.messageText = "That is a large canvas"
+            alert.informativeText = String(
+                format: "%d × %d with %d layer%@ needs about %.1f GB while you work on it. "
+                    + "Sketchy will be slow, and other apps may suffer.",
+                width, height, layers, layers == 1 ? "" : "s",
+                Double(bytes) / 1_000_000_000)
+            alert.addButton(withTitle: "Continue")
+            alert.addButton(withTitle: "Cancel")
+            return alert.runModal() == .alertFirstButtonReturn
+
+        case .tooLarge(let reason):
+            let alert = NSAlert()
+            alert.messageText = "That canvas is too large"
+            alert.informativeText = reason
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return false
+        }
+    }
+
     /// Paint.NET asks the same question: the answer changes the document, so it
     /// should not be guessed at.
     private func askAboutOversizedPaste(imageSize: CGSize) -> Document.PasteFit? {
@@ -501,6 +531,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         if doc.exceedsCanvas(size) {
             guard let fit = askAboutOversizedPaste(imageSize: size) else { return }
             if fit != .keepCanvas {
+                let target = fit.canvasSize(current: doc.size, imageSize: size)
+                guard approveCanvasSize(width: Int(target.width), height: Int(target.height),
+                                        layers: doc.layers.count) else { return }
                 // Anchor top-left so existing art keeps its place.
                 doc.resizeCanvas(to: fit.canvasSize(current: doc.size, imageSize: size),
                                  anchor: CGPoint(x: 0, y: 1))
@@ -599,6 +632,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
                           anchorLabel: "Anchor", resampling: settings.resampling,
                           in: window) { [weak self] choice in
             guard let self, let choice else { return }
+            guard approveCanvasSize(width: Int(choice.size.width), height: Int(choice.size.height),
+                                    layers: doc.layers.count) else { return }
             settings.resampling = choice.resampling
             // Only a proportional resize can leave space for the anchor to place.
             doc.resizeImage(to: choice.size, anchor: choice.anchor,
@@ -616,6 +651,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
                           width: doc.width, height: doc.height,
                           anchorLabel: "Anchor", in: window) { [weak self] choice in
             guard let self, let choice else { return }
+            guard approveCanvasSize(width: Int(choice.size.width), height: Int(choice.size.height),
+                                    layers: doc.layers.count) else { return }
             doc.resizeCanvas(to: choice.size, anchor: choice.anchor)
             refreshPanels()
         }
@@ -630,7 +667,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
 
     // MARK: - Layers menu
 
-    @objc func addLayer(_ sender: Any?) { commitPendingEdits(); doc.addLayer(); refreshPanels() }
+    @objc func addLayer(_ sender: Any?) {
+        commitPendingEdits()
+        guard approveCanvasSize(width: doc.width, height: doc.height,
+                                layers: doc.layers.count + 1) else { return }
+        doc.addLayer()
+        refreshPanels()
+    }
     @objc func deleteLayer(_ sender: Any?) { commitPendingEdits(); doc.deleteSelectedLayer(); refreshPanels() }
     @objc func duplicateLayer(_ sender: Any?) { commitPendingEdits(); doc.duplicateSelectedLayer(); refreshPanels() }
     @objc func mergeLayerDown(_ sender: Any?) { commitPendingEdits(); doc.mergeLayerDown(); refreshPanels() }

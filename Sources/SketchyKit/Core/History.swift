@@ -15,6 +15,9 @@ struct HistorySnapshot {
     let selectedIndex: Int
     let width: Int
     let height: Int
+
+    /// Roughly what this snapshot costs to keep.
+    var bytes: Int { width * height * 4 * max(1, layers.count) }
 }
 
 final class HistoryManager {
@@ -22,6 +25,13 @@ final class HistoryManager {
     private(set) var cursor: Int = -1
     /// Cap so a long session doesn't eat all of RAM.
     var limit: Int = 60
+    /// Snapshots are whole-canvas copies, so on a large document a handful of
+    /// them outweighs the document itself. Total kept is capped at a share of
+    /// the machine rather than a step count alone.
+    var byteBudget: Int = Int(ProcessInfo.processInfo.physicalMemory) / 4
+
+    /// Steps currently held, oldest first, and what they cost.
+    var estimatedBytes: Int { entries.reduce(0) { $0 + $1.bytes } }
 
     var canUndo: Bool { cursor > 0 }
     var canRedo: Bool { cursor < entries.count - 1 }
@@ -42,6 +52,11 @@ final class HistoryManager {
         entries.append(snapshot)
         if entries.count > limit {
             entries.removeFirst(entries.count - limit)
+        }
+        // Drop the oldest steps until the total fits the budget, always
+        // keeping the current state and one step to undo into.
+        while entries.count > 2, estimatedBytes > byteBudget {
+            entries.removeFirst()
         }
         cursor = entries.count - 1
         onChange?()

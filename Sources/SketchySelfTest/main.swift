@@ -1121,6 +1121,111 @@ do {
     store.removePersistentDomain(forName: suite)
 }
 
+section("canvas size limits")
+do {
+    let sixteenGB = 16_000_000_000
+
+    // Ordinary sizes are waved through.
+    equal(Document.verdict(width: 800, height: 600, physicalMemory: sixteenGB), .fine,
+          "a normal canvas is fine")
+    equal(Document.verdict(width: 4000, height: 3000, layers: 3, physicalMemory: sixteenGB), .fine,
+          "so is a photo with a few layers")
+
+    // 20000 x 20000 is 1.6 GB a layer, and the compositing buffer doubles it.
+    equal(Document.bytesNeeded(width: 20000, height: 20000), 3_200_000_000,
+          "one layer plus its composite is 3.2 GB")
+    if case .heavy(let bytes) = Document.verdict(width: 20000, height: 20000, physicalMemory: sixteenGB) {
+        equal(bytes, 3_200_000_000, "a 20k canvas warns rather than refuses on 16 GB")
+    } else {
+        check(false, "20k on 16 GB should warn")
+    }
+
+    // The same canvas on a smaller machine is refused outright.
+    if case .tooLarge = Document.verdict(width: 20000, height: 20000, physicalMemory: 4_000_000_000) {
+        check(true, "refused on a 4 GB machine")
+    } else {
+        check(false, "20k on 4 GB should be refused")
+    }
+
+    // Layers multiply it, so the check counts them.
+    if case .tooLarge = Document.verdict(width: 20000, height: 20000, layers: 6,
+                                         physicalMemory: sixteenGB) {
+        check(true, "six layers at 20k is refused even on 16 GB")
+    } else {
+        check(false, "layer count should count against the limit")
+    }
+
+    // Absurd dimensions are rejected before any arithmetic about memory.
+    if case .tooLarge(let reason) = Document.verdict(width: 100_000, height: 10,
+                                                     physicalMemory: sixteenGB) {
+        check(reason.contains("32000"), "a side beyond the bitmap limit is named as the reason")
+    } else {
+        check(false, "100k wide should be refused")
+    }
+    if case .tooLarge = Document.verdict(width: 0, height: 100, physicalMemory: sixteenGB) {
+        check(true, "zero width is refused")
+    } else {
+        check(false, "zero width should be refused")
+    }
+}
+
+section("compositing only what is on screen")
+do {
+    let doc = Document(width: 2000, height: 1500, background: nil)
+    let layer = doc.selectedLayer!
+    layer.context.setFillColor(NSColor.red.cgColor)
+    layer.context.fill(CGRect(x: 0, y: 0, width: 200, height: 200))       // bottom left
+    layer.context.setFillColor(NSColor.blue.cgColor)
+    layer.context.fill(CGRect(x: 1800, y: 1300, width: 200, height: 200)) // top right
+
+    // A slice comes back at the pixel size asked for, not the canvas size.
+    let slice = doc.composite(region: CGRect(x: 0, y: 0, width: 400, height: 300),
+                              pixelSize: CGSize(width: 400, height: 300))
+    equal(slice?.width ?? 0, 400, "the buffer is the size requested")
+    equal(slice?.height ?? 0, 300, "in both axes")
+
+    let probe = Layer(width: slice!.width, height: slice!.height, name: "probe")
+    probe.draw(image: slice!)
+    equal(PixelOps.sample(probe, x: 50, y: 50)?.r ?? 0, 255, "the red corner is in this slice")
+    check(Int(PixelOps.sample(probe, x: 50, y: 50)?.b ?? 255) < 60, "and it is red")
+    check(Int(PixelOps.sample(probe, x: 380, y: 280)?.a ?? 255) < 60, "the rest of the slice is empty")
+
+    // Zoomed out, the buffer is smaller than the region it covers.
+    let thumb = doc.composite(region: doc.bounds, pixelSize: CGSize(width: 200, height: 150))
+    equal(thumb?.width ?? 0, 200, "a zoomed-out view costs 200 pixels across")
+    let thumbProbe = Layer(width: thumb!.width, height: thumb!.height, name: "thumb")
+    thumbProbe.draw(image: thumb!)
+    equal(PixelOps.sample(thumbProbe, x: 5, y: 5)?.r ?? 0, 255, "red still bottom left")
+    equal(PixelOps.sample(thumbProbe, x: 195, y: 145)?.b ?? 0, 255, "blue still top right")
+
+    check(doc.composite(region: CGRect(x: 5000, y: 5000, width: 10, height: 10),
+                        pixelSize: CGSize(width: 10, height: 10)) == nil,
+          "a region off the canvas composites to nothing")
+}
+
+section("history stays inside a memory budget")
+do {
+    let doc = Document(width: 1000, height: 1000)
+    // A budget of three snapshots' worth: 1000 x 1000 x 4 = 4 MB each.
+    doc.history.byteBudget = 12_000_000
+
+    for step in 1...10 {
+        doc.selectedLayer?.context.setFillColor(NSColor.black.cgColor)
+        doc.selectedLayer?.context.fill(CGRect(x: step * 10, y: 0, width: 8, height: 1000))
+        doc.commit("stroke \(step)")
+    }
+
+    check(doc.history.entries.count < 10, "old steps are dropped once the budget is passed")
+    check(doc.history.estimatedBytes <= 12_000_000, "the kept steps fit the budget")
+    check(doc.history.canUndo, "there is still something to undo")
+    check(doc.undo(), "and undo still works")
+
+    // A small document keeps its full history.
+    let small = Document(width: 100, height: 100)
+    for step in 1...10 { small.addLayer(named: "layer \(step)") }
+    equal(small.history.entries.count, 11, "a small document keeps every step")
+}
+
 // MARK: - Combining selections
 
 section("modifiers combine selections")

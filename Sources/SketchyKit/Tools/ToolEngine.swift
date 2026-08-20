@@ -16,6 +16,10 @@ final class ToolEngine {
     /// Scratch buffer holding the current paintbrush stroke as an alpha mask, so
     /// overlapping dabs don't darken each other mid-stroke.
     private var strokeScratch: Layer?
+    /// Where the scratch buffer sits on the canvas. It covers the stroke so
+    /// far rather than the whole document, which is the difference between a
+    /// few megabytes and the size of the canvas on a large image.
+    private var strokeScratchOrigin: CGPoint = .zero
     private var stampImage: CGImage?
     private var stampKey: String = ""
 
@@ -590,22 +594,25 @@ final class ToolEngine {
     }
 
     /// A single soft round dab, cached because it only depends on size/hardness.
-    private func brushStamp(diameter: CGFloat, hardness: CGFloat) -> CGImage? {
+    private func brushStamp(diameter: CGFloat, hardness: CGFloat, color: NSColor) -> CGImage? {
         let size = max(2, Int(diameter.rounded()))
-        let key = "\(size)-\(Int(hardness * 100))"
+        let rgba = color.srgb
+        let key = "\(size)-\(Int(hardness * 100))-\(rgba.hexString)"
         if key == stampKey, let stampImage { return stampImage }
 
         let l = Layer(width: size, height: size, name: "stamp")
         let ctx = l.context
         let c = CGFloat(size) / 2
         if hardness >= 0.99 {
-            ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+            ctx.setFillColor(rgba.cgColor)
             ctx.fillEllipse(in: CGRect(x: 0, y: 0, width: size, height: size))
         } else {
             // Opaque core out to `hardness`, fading to nothing at the rim.
-            let colors = [CGColor(gray: 1, alpha: 1), CGColor(gray: 1, alpha: 1), CGColor(gray: 1, alpha: 0)]
+            let solid = rgba.cgColor
+            let clear = rgba.withAlphaComponent(0).cgColor
+            let colors = [solid, solid, clear]
             let stops: [CGFloat] = [0, max(0.01, hardness * 0.9), 1]
-            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceGray(),
+            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
                                      colors: colors as CFArray, locations: stops) {
                 ctx.drawRadialGradient(grad,
                                        startCenter: CGPoint(x: c, y: c), startRadius: 0,
@@ -622,7 +629,8 @@ final class ToolEngine {
     /// which keeps the highest alpha instead of accumulating it.
     private func stampStroke(from a: CGPoint, to b: CGPoint, into scratch: Layer) {
         let width = settings.brushWidth
-        guard let stamp = brushStamp(diameter: width, hardness: settings.hardness) else { return }
+        guard let stamp = brushStamp(diameter: width, hardness: settings.hardness,
+                                     color: strokeColor) else { return }
         let spacing = max(0.5, width * 0.12)
         let distance = hypot(b.x - a.x, b.y - a.y)
         let steps = max(1, Int(distance / spacing))
@@ -632,31 +640,55 @@ final class ToolEngine {
         for i in 0...steps {
             let t = steps == 0 ? 0 : CGFloat(i) / CGFloat(steps)
             let p = CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
-            ctx.draw(stamp, in: CGRect(x: p.x - width / 2, y: p.y - width / 2, width: width, height: width))
+            ctx.draw(stamp, in: CGRect(x: p.x - strokeScratchOrigin.x - width / 2,
+                                       y: p.y - strokeScratchOrigin.y - width / 2,
+                                       width: width, height: width))
         }
         ctx.restoreGState()
     }
 
-    /// Colorizes the scratch mask with the active color.
-    private func tintedStroke(_ scratch: Layer) -> CGImage? {
-        guard let mask = scratch.image else { return nil }
-        let out = Layer(width: scratch.width, height: scratch.height, name: "tint")
-        let ctx = out.context
-        ctx.draw(mask, in: CGRect(x: 0, y: 0, width: scratch.width, height: scratch.height))
-        ctx.setBlendMode(.sourceIn)
-        ctx.setFillColor(strokeColor.srgb.cgColor)
-        ctx.fill(CGRect(x: 0, y: 0, width: scratch.width, height: scratch.height))
-        return out.image
+    /// Where the scratch currently lives on the canvas.
+    private var strokeScratchRect: CGRect {
+        guard let scratch = strokeScratch else { return .zero }
+        return CGRect(x: strokeScratchOrigin.x, y: strokeScratchOrigin.y,
+                      width: CGFloat(scratch.width), height: CGFloat(scratch.height))
+    }
+
+    /// Makes sure the scratch covers `needed`, growing it in blocks so a long
+    /// stroke does not reallocate on every dab.
+    private func growScratch(toCover needed: CGRect) {
+        let block: CGFloat = 256
+        let padded = needed.insetBy(dx: -block / 2, dy: -block / 2)
+        if strokeScratch != nil, strokeScratchRect.contains(padded) { return }
+
+        var union = strokeScratch == nil ? padded : strokeScratchRect.union(padded)
+        union = union.intersection(doc.bounds.insetBy(dx: -block, dy: -block))
+        guard !union.isEmpty else { return }
+
+        // Snap outwards to whole blocks.
+        let origin = CGPoint(x: (union.minX / block).rounded(.down) * block,
+                             y: (union.minY / block).rounded(.down) * block)
+        let size = CGSize(width: ((union.maxX - origin.x) / block).rounded(.up) * block,
+                          height: ((union.maxY - origin.y) / block).rounded(.up) * block)
+
+        let grown = Layer(width: max(1, Int(size.width)), height: max(1, Int(size.height)), name: "stroke")
+        if let old = strokeScratch, let image = old.image {
+            grown.context.draw(image, in: CGRect(x: strokeScratchOrigin.x - origin.x,
+                                                 y: strokeScratchOrigin.y - origin.y,
+                                                 width: CGFloat(old.width), height: CGFloat(old.height)))
+        }
+        strokeScratch = grown
+        strokeScratchOrigin = origin
     }
 
     private func commitStroke() {
         guard let scratch = strokeScratch, let layer = doc.selectedLayer,
-              let tinted = tintedStroke(scratch) else { strokeScratch = nil; return }
+              let image = scratch.image else { strokeScratch = nil; return }
         let ctx = layer.context
         ctx.saveGState()
         doc.clipToSelection(ctx)
         ctx.setBlendMode(settings.blendMode.cgBlendMode)
-        ctx.draw(tinted, in: doc.bounds)
+        ctx.draw(image, in: strokeScratchRect)
         ctx.restoreGState()
         strokeScratch = nil
     }
@@ -664,10 +696,12 @@ final class ToolEngine {
     private func dab(from a: CGPoint, to b: CGPoint) {
         guard let layer = doc.selectedLayer else { return }
         if settings.tool == .paintbrush {
-            if strokeScratch == nil {
-                strokeScratch = Layer(width: doc.width, height: doc.height, name: "stroke")
-            }
-            stampStroke(from: a, to: b, into: strokeScratch!)
+            let reach = settings.brushWidth
+            growScratch(toCover: CGRect(x: min(a.x, b.x) - reach, y: min(a.y, b.y) - reach,
+                                        width: abs(b.x - a.x) + reach * 2,
+                                        height: abs(b.y - a.y) + reach * 2))
+            guard let scratch = strokeScratch else { return }
+            stampStroke(from: a, to: b, into: scratch)
             return
         }
         let ctx = brushContext(layer)
@@ -1176,11 +1210,11 @@ final class ToolEngine {
 
     /// Canvas overlay: preview geometry plus any floating pixels mid-drag.
     func drawOverlay(in ctx: CGContext, scale: CGFloat) {
-        if let scratch = strokeScratch, let tinted = tintedStroke(scratch) {
+        if let scratch = strokeScratch, let image = scratch.image {
             ctx.saveGState()
             ctx.setBlendMode(settings.blendMode.cgBlendMode)
             if let sel = doc.selectionPath { ctx.addPath(sel); ctx.clip(using: .evenOdd) }
-            ctx.draw(tinted, in: doc.bounds)
+            ctx.draw(image, in: strokeScratchRect)
             ctx.restoreGState()
         }
         if settings.tool == .moveSelection && floatingImage == nil {

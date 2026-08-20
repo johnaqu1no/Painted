@@ -69,7 +69,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         Dialogs.sizeSheet(title: "New Image", message: "Choose the canvas size.",
                           width: 800, height: 600, in: window) { [weak self] choice in
             guard let self, let choice else { return }
-            present(Document(width: Int(choice.size.width), height: Int(choice.size.height)))
+            let width = Int(choice.size.width)
+            let height = Int(choice.size.height)
+            guard frontController?.approveCanvasSize(width: width, height: height) ?? true else { return }
+            present(Document(width: width, height: height))
         }
     }
 
