@@ -6,6 +6,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controllers: [MainWindowController] = []
     private let hub = PaletteHub()
     private var keyMonitor: Any?
+    private var shortcutsWindow: ShortcutsWindowController?
 
     var frontController: MainWindowController? {
         if let key = NSApp.keyWindow?.windowController as? MainWindowController { return key }
@@ -132,11 +133,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 controller.selectTool(controller.settings.tool)
                 return nil
             }
-            // Cycle through the tools that share a key, like Paint.NET does.
-            let matches = ToolID.paletteOrder.filter { $0.keyEquivalent == chars }
-            guard !matches.isEmpty else { return event }
-            let current = controller.settings.tool
-            let next = matches.firstIndex(of: current).map { matches[($0 + 1) % matches.count] } ?? matches[0]
+            // Tools sharing a key cycle, the way Paint.NET does.
+            guard let next = hub.shortcuts.nextTool(for: chars, after: controller.settings.tool)
+            else { return event }
             controller.selectTool(next)
             return nil
         }
@@ -157,6 +156,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Sketchy
         let appMenu = NSMenu()
         appMenu.addItem(item("About Sketchy", #selector(showAbout), ""))
+        appMenu.addItem(.separator())
+        appMenu.addItem(item("Tool Shortcuts…", #selector(showShortcuts), ","))
         appMenu.addItem(.separator())
         appMenu.addItem(item("Hide Sketchy", #selector(NSApplication.hide(_:)), "h"))
         let hideOthers = item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h")
@@ -375,6 +376,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             .credits: credits,
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): copyright
         ])
+    }
+
+    @objc private func showShortcuts() {
+        if shortcutsWindow == nil {
+            shortcutsWindow = ShortcutsWindowController(shortcuts: hub.shortcuts)
+        }
+        shortcutsWindow?.showWindow(nil)
+        shortcutsWindow?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func showHelp() {

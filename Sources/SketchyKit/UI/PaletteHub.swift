@@ -9,11 +9,14 @@ final class PaletteHub {
     let historyPanel = HistoryPanel()
     let layersPanel = LayersPanel()
     let dock = DockManager()
+    let shortcuts = ToolShortcuts()
 
     private(set) weak var activeController: MainWindowController?
     private var didRestoreLayout = false
 
     init() {
+        toolsPanel.palette.shortcuts = shortcuts
+        shortcuts.onChange = { [weak self] in self?.toolsPanel.palette.refreshTooltips() }
         dock.register(Palette(id: "tools", title: "Tools", panel: toolsPanel,
                               dockedHeight: toolsPanel.frame.height))
         dock.register(Palette(id: "colors", title: "Colors", panel: colorsPanel,

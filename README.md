@@ -16,14 +16,18 @@ fourteen blend modes, and are composited top-down every time the canvas
 redraws. Every edit pushes a snapshot onto the history, so the History palette
 is a list you can click back into rather than a fixed number of undo steps.
 
-**Tools.** Nineteen of them — selections, magic wand, brush, pencil, eraser,
+**Tools.** Nineteen of them, each with a one-key shortcut shown in its tooltip
+and rebindable under Sketchy ▸ Tool Shortcuts. Tools sharing a key cycle through
+each other.
+
+The set is selections, magic wand, brush, pencil, eraser,
 bucket, gradient, clone stamp, recolor, colour picker, text, line, and thirteen
 shapes. The options bar rebuilds itself around whichever tool is active, so it
 only ever shows settings that tool actually uses. Left-drag paints with the
 primary colour, right-drag with the secondary.
 
 **Selections.** Hold ⌥ while dragging to add a region, ⌘ to subtract, ⌥⌘ to
-intersect; a click with no drag selects the single pixel under the pointer. The
+intersect; a click with no drag clears the selection. The
 magic wand traces the boundary of what it matched, so the marching ants outline
 the region rather than hatching it. Move Selection drags and resizes the
 outline; Move Selected Pixels lifts the pixels themselves.

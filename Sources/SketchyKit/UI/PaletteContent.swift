@@ -10,6 +10,8 @@ protocol PaletteContent: NSView {
 final class ToolsPaletteView: NSView, PaletteContent {
     private var buttons: [ToolID: IconButton] = [:]
     private let cell = NSSize(width: 34, height: 34)
+    /// Shortcuts are shown in the tooltips, and can change while running.
+    var shortcuts: ToolShortcuts? { didSet { refreshTooltips() } }
     private let inset: CGFloat = 8
     var onSelect: ((ToolID) -> Void)?
 
@@ -73,6 +75,17 @@ final class ToolsPaletteView: NSView, PaletteContent {
 
     func select(_ tool: ToolID) {
         for (id, b) in buttons { b.isSelectedTool = (id == tool) }
+    }
+
+    /// "Paintbrush (B)", or just the name when the tool has no key.
+    func refreshTooltips() {
+        for (tool, button) in buttons {
+            if let key = shortcuts?.key(for: tool)?.uppercased() {
+                button.toolTip = "\(tool.title) (\(key))"
+            } else {
+                button.toolTip = tool.title
+            }
+        }
     }
 }
 

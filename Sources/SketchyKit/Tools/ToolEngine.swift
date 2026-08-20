@@ -311,10 +311,18 @@ final class ToolEngine {
             doc.commit(pendingCommitTitle ?? "Paint Bucket")
             pendingCommitTitle = nil
         case .rectangleSelect, .ellipseSelect:
-            applySelection(selectionShapePath(to: p, modifiers: modifiers))
+            if isClickWithoutDrag(p) {
+                handleSelectionClick(modifiers: modifiers)
+            } else {
+                applySelection(selectionShapePath(to: p, modifiers: modifiers))
+            }
         case .lassoSelect:
-            lassoPoints.append(p)
-            applySelection(lassoPath(closed: true))
+            if isClickWithoutDrag(p), lassoPoints.count < 3 {
+                handleSelectionClick(modifiers: modifiers)
+            } else {
+                lassoPoints.append(p)
+                applySelection(lassoPath(closed: true))
+            }
             lassoPoints = []
         case .line, .shapes:
             // The shape stays live so it can still be moved, resized or rotated.
@@ -860,26 +868,33 @@ final class ToolEngine {
     // MARK: - Selection
 
     private func selectionShapePath(to p: CGPoint, modifiers: NSEvent.ModifierFlags) -> CGPath {
-        var r = constrained(dragStart, p, modifiers: modifiers).integral
-        if r.width < 1 || r.height < 1 { r = ToolEngine.pixelRect(at: dragStart) }
+        let r = constrained(dragStart, p, modifiers: modifiers).integral
         return settings.tool == .ellipseSelect
             ? CGPath(ellipseIn: r, transform: nil)
             : CGPath(rect: r, transform: nil)
     }
 
-    /// The one-pixel square a click landed on.
-    static func pixelRect(at p: CGPoint) -> CGRect {
-        CGRect(x: p.x.rounded(.down), y: p.y.rounded(.down), width: 1, height: 1)
+    /// True when the pointer never really moved, which reads as a click.
+    private func isClickWithoutDrag(_ p: CGPoint) -> Bool {
+        hypot(p.x - dragStart.x, p.y - dragStart.y) < 1
+    }
+
+    /// A click on the canvas drops the selection. With a combining modifier
+    /// held it does nothing instead, since the intent there was to keep what
+    /// is already selected.
+    private func handleSelectionClick(modifiers: NSEvent.ModifierFlags) {
+        guard activeSelectionMode == .replace else {
+            doc.selectionPath = startedSelection
+            doc.onChange?()
+            return
+        }
+        doc.selectionPath = nil
+        doc.onChange?()
     }
 
     private func lassoPath(closed: Bool) -> CGPath {
         let p = CGMutablePath()
         guard let first = lassoPoints.first else { return p.copy()! }
-        // A click without a drag picks the single pixel underneath.
-        if closed, lassoPoints.count < 3 {
-            p.addRect(ToolEngine.pixelRect(at: first))
-            return p.copy()!
-        }
         p.move(to: first)
         for pt in lassoPoints.dropFirst() { p.addLine(to: pt) }
         if closed { p.closeSubpath() }

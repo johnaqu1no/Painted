@@ -1081,6 +1081,46 @@ do {
     equal(pixel(doc, 5, 25)?.r ?? 0, 255, "the old art stayed in the top-left corner")
 }
 
+section("tool shortcuts")
+do {
+    let suite = "SketchySelfTest-\(UUID().uuidString)"
+    let store = UserDefaults(suiteName: suite)!
+    var shortcuts = ToolShortcuts(store: store)
+
+    equal(shortcuts.key(for: .paintbrush), "b", "the shipped key for the brush")
+    equal(shortcuts.key(for: .eraser), "e", "and for the eraser")
+
+    // The three selection tools share one key and cycle in palette order.
+    let sharing = shortcuts.tools(for: "s")
+    equal(sharing, [.rectangleSelect, .lassoSelect, .ellipseSelect], "selection tools share S")
+    equal(shortcuts.nextTool(for: "s", after: .rectangleSelect), .lassoSelect, "S walks to the next")
+    equal(shortcuts.nextTool(for: "s", after: .ellipseSelect), .rectangleSelect, "and wraps around")
+    equal(shortcuts.nextTool(for: "b", after: .eraser), .paintbrush, "a key not on the current tool jumps to it")
+    check(shortcuts.nextTool(for: "9", after: .paintbrush) == nil, "an unassigned key does nothing")
+
+    // Rebinding.
+    shortcuts.setKey("Q", for: .paintbrush)
+    equal(shortcuts.key(for: .paintbrush), "q", "keys are stored lowercase")
+    equal(shortcuts.nextTool(for: "q", after: .eraser), .paintbrush, "the new key works")
+    check(shortcuts.nextTool(for: "b", after: .eraser) == nil, "the old key no longer does")
+
+    shortcuts.setKey("", for: .eraser)
+    check(shortcuts.key(for: .eraser) == nil, "an empty key unassigns the tool")
+    shortcuts.setKey("longer", for: .pencil)
+    equal(shortcuts.key(for: .pencil), "l", "only the first character is kept")
+
+    // Changes survive a restart.
+    shortcuts = ToolShortcuts(store: store)
+    equal(shortcuts.key(for: .paintbrush), "q", "rebinding is remembered")
+    check(shortcuts.key(for: .eraser) == nil, "so is unassigning")
+
+    shortcuts.reset()
+    equal(shortcuts.key(for: .paintbrush), "b", "restoring defaults brings the shipped keys back")
+    equal(shortcuts.key(for: .eraser), "e", "for every tool")
+
+    store.removePersistentDomain(forName: suite)
+}
+
 // MARK: - Combining selections
 
 section("modifiers combine selections")
@@ -1151,39 +1191,48 @@ do {
           "the white gap between them stays unselected")
 }
 
-section("clicking selects one pixel")
+section("clicking clears the selection")
 do {
     let doc = Document(width: 50, height: 50)
     let settings = ToolSettings()
     settings.tool = .rectangleSelect
     let engine = ToolEngine(doc: doc, settings: settings)
 
-    // A click with no movement selects the pixel under the pointer.
-    engine.mouseDown(at: CGPoint(x: 12.7, y: 8.2), rightButton: false, modifiers: [])
-    engine.mouseUp(at: CGPoint(x: 12.7, y: 8.2), modifiers: [])
-    let box = doc.selectionPath?.boundingBoxOfPath ?? .zero
-    equal(box, CGRect(x: 12, y: 8, width: 1, height: 1), "one pixel is selected")
-    check(doc.selectionPath?.contains(CGPoint(x: 12.5, y: 8.5)) ?? false, "the pixel itself is inside")
+    func click(_ at: CGPoint, _ modifiers: NSEvent.ModifierFlags = []) {
+        engine.mouseDown(at: at, rightButton: false, modifiers: modifiers)
+        engine.mouseUp(at: at, modifiers: modifiers)
+    }
 
-    // The same for the ellipse and lasso tools.
+    doc.selectionPath = CGPath(rect: CGRect(x: 5, y: 5, width: 20, height: 20), transform: nil)
+    click(CGPoint(x: 40, y: 40))
+    check(doc.selectionPath == nil, "a click with no drag deselects")
+
+    // The same for the other selection tools.
+    doc.selectionPath = CGPath(rect: CGRect(x: 5, y: 5, width: 20, height: 20), transform: nil)
     settings.tool = .ellipseSelect
-    engine.mouseDown(at: CGPoint(x: 30, y: 30), rightButton: false, modifiers: [])
-    engine.mouseUp(at: CGPoint(x: 30, y: 30), modifiers: [])
-    near(doc.selectionPath?.boundingBoxOfPath.width ?? 0, 1, 0.01, "ellipse click is one pixel wide")
+    click(CGPoint(x: 30, y: 30))
+    check(doc.selectionPath == nil, "the ellipse tool deselects too")
 
+    doc.selectionPath = CGPath(rect: CGRect(x: 5, y: 5, width: 20, height: 20), transform: nil)
     settings.tool = .lassoSelect
-    engine.mouseDown(at: CGPoint(x: 5, y: 40), rightButton: false, modifiers: [])
-    engine.mouseUp(at: CGPoint(x: 5, y: 40), modifiers: [])
-    equal(doc.selectionPath?.boundingBoxOfPath ?? .zero, CGRect(x: 5, y: 40, width: 1, height: 1),
-          "lasso click is one pixel")
+    click(CGPoint(x: 12, y: 34))
+    check(doc.selectionPath == nil, "so does the lasso")
 
-    // Clicking with option adds that pixel to what is already selected.
+    // Holding a combining modifier means "keep what I have", so a stray click
+    // must not throw the selection away.
     settings.tool = .rectangleSelect
-    doc.selectionPath = CGPath(rect: CGRect(x: 0, y: 0, width: 4, height: 4), transform: nil)
-    engine.mouseDown(at: CGPoint(x: 20, y: 20), rightButton: false, modifiers: [.option])
-    engine.mouseUp(at: CGPoint(x: 20, y: 20), modifiers: [.option])
-    check(doc.selectionPath?.contains(CGPoint(x: 2, y: 2)) ?? false, "the old region survives")
-    check(doc.selectionPath?.contains(CGPoint(x: 20.5, y: 20.5)) ?? false, "the clicked pixel is added")
+    let kept = CGPath(rect: CGRect(x: 5, y: 5, width: 20, height: 20), transform: nil)
+    doc.selectionPath = kept
+    click(CGPoint(x: 40, y: 40), [.option])
+    equal(doc.selectionPath?.boundingBoxOfPath ?? .zero, kept.boundingBoxOfPath,
+          "option-clicking leaves the selection alone")
+
+    // A real drag still selects, however small.
+    engine.mouseDown(at: CGPoint(x: 10, y: 10), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 14, y: 13), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 14, y: 13), modifiers: [])
+    equal(doc.selectionPath?.boundingBoxOfPath ?? .zero, CGRect(x: 10, y: 10, width: 4, height: 3),
+          "a small drag still selects")
 }
 
 section("a replacing drag drops the old selection at once")
