@@ -350,7 +350,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "1.0.0"
         let copyright = info?["NSHumanReadableCopyright"] as? String
-            ?? "© 2026 John Aquino · PolyForm Noncommercial 1.0.0"
+            ?? "© 2026 John Aquino · All rights reserved"
 
         let body = NSMutableParagraphStyle()
         body.alignment = .center

@@ -61,13 +61,12 @@ Questions and help: open a
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE).
+[Sketchy Source License](LICENSE) — source-available, not open source.
 
-Free for any noncommercial purpose — personal work, hobby projects, study,
-charities, schools. Build it yourself, change it, pass those changes on; the
-terms travel with the copy. Using Sketchy to make money, inside a company or
-freelance, needs a commercial licence, which is what buying a build gets you:
-<https://sketchy.tools>.
+Read the code, build it, change it, and use your own build for anything you
+like, including work you are paid for. What you cannot do is hand builds or
+source on to other people; that is the part a purchase covers, and it is what
+funds the app: <https://sketchy.tools>.
 
 ## Credits
 

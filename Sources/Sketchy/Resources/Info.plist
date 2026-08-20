@@ -13,7 +13,7 @@
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
     <key>ITSAppUsesNonExemptEncryption</key><false/>
-    <key>NSHumanReadableCopyright</key><string>© 2026 John Aquino · PolyForm Noncommercial 1.0.0</string>
+    <key>NSHumanReadableCopyright</key><string>© 2026 John Aquino · All rights reserved</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>UTExportedTypeDeclarations</key>
