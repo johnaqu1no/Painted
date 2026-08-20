@@ -8,8 +8,6 @@ class FloatingPanel: NSPanel, NSWindowDelegate {
                    styleMask: [.titled, .closable, .utilityWindow, .nonactivatingPanel, .hudWindow],
                    backing: .buffered, defer: false)
         self.title = title
-        isFloatingPanel = true
-        level = .floating
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = true
         isMovableByWindowBackground = true
@@ -19,6 +17,16 @@ class FloatingPanel: NSPanel, NSWindowDelegate {
         standardWindowButton(.miniaturizeButton)?.isHidden = true
         standardWindowButton(.zoomButton)?.isHidden = true
         delegate = self
+    }
+
+    /// Whether the palette sits above the document window at all times.
+    /// Off by default: a palette pinned in front covers the canvas, and
+    /// clicking the canvas should be enough to bring it forward.
+    var keepsInFront: Bool = false {
+        didSet {
+            isFloatingPanel = keepsInFront
+            level = keepsInFront ? .floating : .normal
+        }
     }
 
     override var canBecomeKey: Bool { true }

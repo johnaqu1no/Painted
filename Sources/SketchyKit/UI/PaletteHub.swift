@@ -14,7 +14,24 @@ final class PaletteHub {
     private(set) weak var activeController: MainWindowController?
     private var didRestoreLayout = false
 
+    private static let inFrontKey = "SketchyPalettesInFront"
+
+    /// Palettes sit in the normal window order unless this is turned on.
+    var keepsPalettesInFront: Bool {
+        didSet {
+            UserDefaults.standard.set(keepsPalettesInFront, forKey: PaletteHub.inFrontKey)
+            applyPanelLevel()
+        }
+    }
+
+    private var panels: [FloatingPanel] { [toolsPanel, colorsPanel, historyPanel, layersPanel] }
+
+    private func applyPanelLevel() {
+        panels.forEach { $0.keepsInFront = keepsPalettesInFront }
+    }
+
     init() {
+        keepsPalettesInFront = UserDefaults.standard.bool(forKey: PaletteHub.inFrontKey)
         toolsPanel.palette.shortcuts = shortcuts
         shortcuts.onChange = { [weak self] in self?.toolsPanel.palette.refreshTooltips() }
         dock.register(Palette(id: "tools", title: "Tools", panel: toolsPanel,
@@ -23,6 +40,7 @@ final class PaletteHub {
                               dockedHeight: colorsPanel.frame.height))
         dock.register(Palette(id: "history", title: "History", panel: historyPanel, dockedHeight: nil))
         dock.register(Palette(id: "layers", title: "Layers", panel: layersPanel, dockedHeight: nil))
+        applyPanelLevel()
     }
 
     /// Rewires every palette to a document window and moves any docked palettes
@@ -106,6 +124,14 @@ final class PaletteHub {
         layersPanel.setFrameTopLeftPoint(
             NSPoint(x: frame.maxX - margin - layersPanel.frame.width,
                     y: frame.minY + margin + layersPanel.frame.height))
+    }
+
+    /// Lifts the palettes above the document window once, without pinning
+    /// them there. Clicking the canvas afterwards covers them again, which is
+    /// the point: visible at launch, not permanently in the way.
+    func bringPalettesForward() {
+        guard !keepsPalettesInFront else { return }
+        for panel in panels where panel.isVisible { panel.orderFront(nil) }
     }
 
     /// Hides the floating palettes when the last document tab goes away.

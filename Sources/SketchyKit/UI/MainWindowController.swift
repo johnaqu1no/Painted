@@ -786,6 +786,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         for p in dock.palettes { dock.dock(p, to: .right) }
     }
 
+    @objc func togglePalettesInFront(_ sender: Any?) {
+        hub.keepsPalettesInFront.toggle()
+    }
+
     @objc func resetPaletteLayout(_ sender: Any?) {
         dock.resetLayout()
         if let window { hub.positionPanels(around: window) }

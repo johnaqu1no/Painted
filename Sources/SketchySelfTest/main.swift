@@ -545,6 +545,28 @@ windowSection("document commands land a floating paste first") {
     check(!controller.engine.hasFloatingPixels, "flattening landed it too")
 }
 
+windowSection("palettes stay out of the way") {
+    let hub = PaletteHub()
+    let panels = [hub.toolsPanel, hub.colorsPanel, hub.historyPanel, hub.layersPanel]
+
+    check(!hub.keepsPalettesInFront, "palettes are not pinned in front by default")
+    check(panels.allSatisfy { $0.level == .normal },
+          "so they sit in the normal window order")
+    check(panels.allSatisfy { !$0.isFloatingPanel },
+          "and do not behave as floating panels")
+
+    hub.keepsPalettesInFront = true
+    check(panels.allSatisfy { $0.level == .floating }, "turning the setting on pins them")
+    check(panels.allSatisfy { $0.isFloatingPanel }, "as floating panels")
+
+    hub.keepsPalettesInFront = false
+    check(panels.allSatisfy { $0.level == .normal }, "and turning it off releases them")
+
+    // Palettes still survive the app losing focus either way.
+    check(panels.allSatisfy { !$0.hidesOnDeactivate },
+          "they do not vanish when another app is used")
+}
+
 windowSection("palettes follow the active tab") {
     let hub = PaletteHub()
     let first = MainWindowController(doc: Document(width: 100, height: 80), hub: hub)

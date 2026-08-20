@@ -5,6 +5,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var controllers: [MainWindowController] = []
     private let hub = PaletteHub()
+    private var hasLiftedPalettes = false
+
+    /// Unpinned palettes sit in the normal window order, so activating the app
+    /// raises the document window over them. Lift them once the first document
+    /// is on screen and activation has settled, otherwise a fresh launch shows
+    /// nothing but an empty canvas.
+    private func liftPalettesOnce() {
+        guard !hasLiftedPalettes else { return }
+        hasLiftedPalettes = true
+        hub.bringPalettesForward()
+        // Activation raises the key window after this call returns, so lift
+        // them again once it has run.
+        DispatchQueue.main.async { [hub] in hub.bringPalettesForward() }
+    }
     private var keyMonitor: Any?
     private var shortcutsWindow: ShortcutsWindowController?
 
@@ -17,6 +31,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenuBar()
         installToolShortcuts()
         NSApp.activate(ignoringOtherApps: true)
+        liftPalettesOnce()
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -96,6 +111,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        liftPalettesOnce()
 
         // addTabbedWindow silently does nothing while the host window is still
         // on its way to the window server, so join the tab group a tick later.
@@ -239,6 +255,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             holder.submenu = sub
             palettes.addItem(holder)
         }
+        palettes.addItem(.separator())
+        palettes.addItem(item("Keep Palettes in Front",
+                              #selector(MainWindowController.togglePalettesInFront(_:)), ""))
         palettes.addItem(.separator())
         palettes.addItem(item("Dock All Left", #selector(MainWindowController.dockAllLeft(_:)), ""))
         palettes.addItem(item("Dock All Right", #selector(MainWindowController.dockAllRight(_:)), ""))
