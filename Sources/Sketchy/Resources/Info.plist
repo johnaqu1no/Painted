@@ -11,6 +11,8 @@
     <key>CFBundleExecutable</key><string>Sketchy</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
+    <key>ITSAppUsesNonExemptEncryption</key><false/>
     <key>NSHumanReadableCopyright</key><string>© 2026 John Aquino · PolyForm Noncommercial 1.0.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>

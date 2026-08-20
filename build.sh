@@ -17,7 +17,10 @@ cp Sources/Sketchy/Resources/Info.plist "$APP/Contents/Info.plist"
 if [ -f Sources/Sketchy/Resources/AppIcon.icns ]; then
   cp Sources/Sketchy/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 fi
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+# Ad-hoc signed with the sandbox entitlement, so a local build behaves the way
+# an App Store build does. Release signing happens in CI with a real identity.
+ENTITLEMENTS="Sources/Sketchy/Resources/Sketchy.entitlements"
+codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$APP" >/dev/null 2>&1 || true
 echo "Built $APP"
 
 # `./build.sh release install` also installs into /Applications and registers
