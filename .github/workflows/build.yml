@@ -1,0 +1,71 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Run test suite
+        run: swift run SketchySelfTest
+
+      - name: Build app bundle
+        run: ./build.sh release
+
+      - name: Package
+        run: ditto -c -k --keepParent dist/Sketchy.app Sketchy.zip
+
+      - name: Upload app
+        uses: actions/upload-artifact@v5
+        with:
+          name: Sketchy-macos
+          path: Sketchy.zip
+          if-no-files-found: error
+
+  release:
+    name: Attach build to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build app bundle
+        run: ./build.sh release
+
+      - name: Package
+        run: ditto -c -k --keepParent dist/Sketchy.app Sketchy-${{ github.ref_name }}.zip
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            "Sketchy-${{ github.ref_name }}.zip" \
+            --title "Sketchy ${{ github.ref_name }}" \
+            --generate-notes

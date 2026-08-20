@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Sketchy</string>
+    <key>CFBundleDisplayName</key><string>Sketchy</string>
+    <key>CFBundleIdentifier</key><string>gg.lode.sketchy</string>
+    <key>CFBundleVersion</key><string>1.0.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0.0</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleExecutable</key><string>Sketchy</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>NSHumanReadableCopyright</key><string>© 2026 John Aquino · MIT licensed</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+      <dict>
+        <key>UTTypeIdentifier</key><string>gg.lode.sketchy.document</string>
+        <key>UTTypeDescription</key><string>Sketchy Document</string>
+        <key>UTTypeConformsTo</key>
+        <array><string>public.data</string></array>
+        <key>UTTypeTagSpecification</key>
+        <dict>
+          <key>public.filename-extension</key>
+          <array><string>sketchy</string><string>ptd</string></array>
+        </dict>
+      </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+      <dict>
+        <key>CFBundleTypeName</key><string>Sketchy Document</string>
+        <key>CFBundleTypeRole</key><string>Editor</string>
+        <key>LSItemContentTypes</key>
+        <array><string>gg.lode.sketchy.document</string></array>
+      </dict>
+      <dict>
+        <key>CFBundleTypeName</key><string>Image</string>
+        <key>CFBundleTypeRole</key><string>Editor</string>
+        <key>LSItemContentTypes</key>
+        <array>
+          <string>public.png</string><string>public.jpeg</string>
+          <string>public.tiff</string><string>com.compuserve.gif</string>
+          <string>com.microsoft.bmp</string><string>public.heic</string>
+          <string>public.heif</string><string>org.webmproject.webp</string>
+          <string>public.image</string>
+        </array>
+        <key>LSHandlerRank</key><string>Owner</string>
+      </dict>
+    </array>
+</dict>
+</plist>

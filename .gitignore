@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+*.xcodeproj
+dist/
+Painted.app/
+DerivedData/
+.DS_Store
+*.md.original
+build/
