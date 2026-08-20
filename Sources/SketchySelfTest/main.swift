@@ -507,6 +507,44 @@ windowSection("palette docking") {
 
 // MARK: - Tabs share one set of palettes
 
+windowSection("document commands land a floating paste first") {
+    let hub = PaletteHub()
+    let controller = MainWindowController(doc: Document(width: 40, height: 20), hub: hub)
+    let doc = controller.doc
+
+    let clip = Layer(width: 10, height: 10, name: "clip")
+    clip.fill(with: .red)
+    controller.selectTool(.moveSelectedPixels)
+    controller.engine.beginFloatingPaste(clip.image!, at: CGPoint(x: 5, y: 5))
+    check(controller.engine.hasFloatingPixels, "the paste is floating")
+
+    // Rotating rebuilds every layer from its bitmap, so a paste left hovering
+    // would be thrown away.
+    controller.rotate90CW(nil)
+    check(!controller.engine.hasFloatingPixels, "rotating landed the paste")
+    equal(doc.width, 20, "the canvas rotated")
+    equal(doc.height, 40, "both ways")
+
+    let landed = doc.composite().map { image -> Bool in
+        let probe = Layer(width: image.width, height: image.height, name: "probe")
+        probe.draw(image: image)
+        for y in 0..<image.height {
+            for x in 0..<image.width {
+                if let p = PixelOps.sample(probe, x: x, y: y), p.r > 200, p.g < 60, p.b < 60 {
+                    return true
+                }
+            }
+        }
+        return false
+    } ?? false
+    check(landed, "the pasted pixels are still in the document after the rotation")
+
+    // The same guard covers the other document-wide commands.
+    controller.engine.beginFloatingPaste(clip.image!, at: CGPoint(x: 2, y: 2))
+    controller.flattenImage(nil)
+    check(!controller.engine.hasFloatingPixels, "flattening landed it too")
+}
+
 windowSection("palettes follow the active tab") {
     let hub = PaletteHub()
     let first = MainWindowController(doc: Document(width: 100, height: 80), hub: hub)
@@ -1015,6 +1053,32 @@ do {
     engine.mouseDragged(to: CGPoint(x: 60, y: 45), modifiers: [])
     near(engine.measuredRect?.width ?? 0, 30, 0.6, "a shape reports its width as it is drawn")
     near(engine.measuredRect?.height ?? 0, 15, 0.6, "and its height")
+}
+
+section("oversized paste choices")
+do {
+    let doc = Document(width: 40, height: 30)
+    let big = CGSize(width: 100, height: 20)
+    check(doc.exceedsCanvas(big), "wider than the canvas counts as oversized")
+    check(doc.exceedsCanvas(CGSize(width: 10, height: 90)), "taller counts too")
+    check(!doc.exceedsCanvas(CGSize(width: 40, height: 30)), "an exact fit does not")
+
+    let current = doc.size
+    equal(Document.PasteFit.expandCanvas.canvasSize(current: current, imageSize: big),
+          CGSize(width: 100, height: 30), "expanding grows only the axes that need it")
+    equal(Document.PasteFit.cropToImage.canvasSize(current: current, imageSize: big),
+          big, "cropping takes the image's size exactly")
+    equal(Document.PasteFit.keepCanvas.canvasSize(current: current, imageSize: big),
+          current, "keeping leaves the canvas alone")
+
+    // Expanding anchors the existing art at the top left.
+    doc.selectedLayer?.context.setFillColor(NSColor.red.cgColor)
+    doc.selectedLayer?.context.fill(CGRect(x: 0, y: 20, width: 10, height: 10))
+    doc.resizeCanvas(to: Document.PasteFit.expandCanvas.canvasSize(current: current, imageSize: big),
+                     anchor: CGPoint(x: 0, y: 1))
+    equal(doc.width, 100, "canvas widened")
+    equal(doc.height, 30, "height untouched")
+    equal(pixel(doc, 5, 25)?.r ?? 0, 255, "the old art stayed in the top-left corner")
 }
 
 // MARK: - Combining selections

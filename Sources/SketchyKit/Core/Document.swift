@@ -323,6 +323,34 @@ final class Document {
         return destination
     }
 
+    /// What to do when pasted pixels do not fit the canvas.
+    enum PasteFit {
+        /// Grow the canvas so the whole image fits, keeping the current art.
+        case expandCanvas
+        /// Make the canvas exactly the size of the pasted image.
+        case cropToImage
+        /// Leave the canvas alone; the paste hangs over the edge until dropped.
+        case keepCanvas
+
+        /// Canvas size this choice implies for an image of `imageSize`.
+        func canvasSize(current: CGSize, imageSize: CGSize) -> CGSize {
+            switch self {
+            case .expandCanvas:
+                return CGSize(width: max(current.width, imageSize.width),
+                              height: max(current.height, imageSize.height))
+            case .cropToImage:
+                return imageSize
+            case .keepCanvas:
+                return current
+            }
+        }
+    }
+
+    /// True when an image would hang over the edge of the canvas.
+    func exceedsCanvas(_ imageSize: CGSize) -> Bool {
+        imageSize.width > CGFloat(width) || imageSize.height > CGFloat(height)
+    }
+
     func selectAll() {
         selectionPath = CGPath(rect: bounds, transform: nil)
         onChange?()

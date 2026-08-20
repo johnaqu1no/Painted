@@ -150,6 +150,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         canvas?.resizeToFit()
     }
 
+    /// Puts down anything still floating above the canvas. Document-wide
+    /// commands rebuild every layer from its bitmap, so a pending paste or
+    /// shape would simply vanish if it were left hovering.
+    func commitPendingEdits() {
+        commitTextOverlay()
+        engine.commitSession()
+        engine.commitFloatingPixels()
+    }
+
     /// Redraws the canvas without touching the palettes.
     func refreshCanvas() {
         canvas.refresh()
@@ -406,6 +415,26 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         }
     }
 
+    /// Paint.NET asks the same question: the answer changes the document, so it
+    /// should not be guessed at.
+    private func askAboutOversizedPaste(imageSize: CGSize) -> Document.PasteFit? {
+        let alert = NSAlert()
+        alert.messageText = "The pasted image is larger than the canvas"
+        alert.informativeText = "It is \(Int(imageSize.width)) x \(Int(imageSize.height)) pixels, "
+            + "and the canvas is \(doc.width) x \(doc.height)."
+        alert.addButton(withTitle: "Expand Canvas")
+        alert.addButton(withTitle: "Crop to Image")
+        alert.addButton(withTitle: "Keep Canvas Size")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:  return .expandCanvas
+        case .alertSecondButtonReturn: return .cropToImage
+        case .alertThirdButtonReturn:  return .keepCanvas
+        default:                       return nil
+        }
+    }
+
     /// Confirms before a multi-layer document is flattened into a flat format.
     private func confirmFlatten(for url: URL) -> Bool {
         guard doc.layers.count > 1,
@@ -465,8 +494,21 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
             img = pasted.cgImage(forProposedRect: nil, context: nil, hints: nil)
         }
         guard let image = img else { return }
-        // Land it in the top-left corner, or on the current selection.
         let size = CGSize(width: image.width, height: image.height)
+
+        // An image bigger than the canvas is a fork in the road, so ask rather
+        // than silently picking one.
+        if doc.exceedsCanvas(size) {
+            guard let fit = askAboutOversizedPaste(imageSize: size) else { return }
+            if fit != .keepCanvas {
+                // Anchor top-left so existing art keeps its place.
+                doc.resizeCanvas(to: fit.canvasSize(current: doc.size, imageSize: size),
+                                 anchor: CGPoint(x: 0, y: 1))
+                doc.deselect()
+            }
+        }
+
+        // Land it in the top-left corner, or on the current selection.
         let box = doc.selectionPath?.boundingBoxOfPath
         let origin = box.map { CGPoint(x: $0.minX, y: $0.maxY - size.height) }
             ?? CGPoint(x: 0, y: CGFloat(doc.height) - size.height)
@@ -521,6 +563,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     // MARK: - Image menu
 
     @objc func cropToSelection(_ sender: Any?) {
+        commitPendingEdits()
         guard let sel = doc.selectionPath else { return }
         let box = sel.boundingBoxOfPath.integral.intersection(doc.bounds)
         guard !box.isEmpty else { return }
@@ -547,6 +590,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     }
 
     @objc func resizeImage(_ sender: Any?) {
+        commitPendingEdits()
         guard let window else { return }
         Dialogs.sizeSheet(title: "Image Size",
                           message: "Resample the image. With proportions kept, the anchor decides "
@@ -564,6 +608,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     }
 
     @objc func resizeCanvas(_ sender: Any?) {
+        commitPendingEdits()
         guard let window else { return }
         Dialogs.sizeSheet(title: "Canvas Size",
                           message: "Change the canvas without scaling the image. The anchor is "
@@ -576,23 +621,24 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         }
     }
 
-    @objc func rotate90CW(_ sender: Any?) { doc.rotate(turns: 3); refreshPanels() }
-    @objc func rotate90CCW(_ sender: Any?) { doc.rotate(turns: 1); refreshPanels() }
-    @objc func rotate180(_ sender: Any?) { doc.rotate(turns: 2); refreshPanels() }
-    @objc func flipHorizontal(_ sender: Any?) { doc.flip(horizontal: true); refreshPanels() }
-    @objc func flipVertical(_ sender: Any?) { doc.flip(horizontal: false); refreshPanels() }
-    @objc func flattenImage(_ sender: Any?) { doc.flatten(); refreshPanels() }
+    @objc func rotate90CW(_ sender: Any?) { commitPendingEdits(); doc.rotate(turns: 3); refreshPanels() }
+    @objc func rotate90CCW(_ sender: Any?) { commitPendingEdits(); doc.rotate(turns: 1); refreshPanels() }
+    @objc func rotate180(_ sender: Any?) { commitPendingEdits(); doc.rotate(turns: 2); refreshPanels() }
+    @objc func flipHorizontal(_ sender: Any?) { commitPendingEdits(); doc.flip(horizontal: true); refreshPanels() }
+    @objc func flipVertical(_ sender: Any?) { commitPendingEdits(); doc.flip(horizontal: false); refreshPanels() }
+    @objc func flattenImage(_ sender: Any?) { commitPendingEdits(); doc.flatten(); refreshPanels() }
 
     // MARK: - Layers menu
 
-    @objc func addLayer(_ sender: Any?) { doc.addLayer(); refreshPanels() }
-    @objc func deleteLayer(_ sender: Any?) { doc.deleteSelectedLayer(); refreshPanels() }
-    @objc func duplicateLayer(_ sender: Any?) { doc.duplicateSelectedLayer(); refreshPanels() }
-    @objc func mergeLayerDown(_ sender: Any?) { doc.mergeLayerDown(); refreshPanels() }
-    @objc func flipLayerHorizontal(_ sender: Any?) { doc.flip(horizontal: true, layerOnly: true); refreshPanels() }
-    @objc func flipLayerVertical(_ sender: Any?) { doc.flip(horizontal: false, layerOnly: true); refreshPanels() }
+    @objc func addLayer(_ sender: Any?) { commitPendingEdits(); doc.addLayer(); refreshPanels() }
+    @objc func deleteLayer(_ sender: Any?) { commitPendingEdits(); doc.deleteSelectedLayer(); refreshPanels() }
+    @objc func duplicateLayer(_ sender: Any?) { commitPendingEdits(); doc.duplicateSelectedLayer(); refreshPanels() }
+    @objc func mergeLayerDown(_ sender: Any?) { commitPendingEdits(); doc.mergeLayerDown(); refreshPanels() }
+    @objc func flipLayerHorizontal(_ sender: Any?) { commitPendingEdits(); doc.flip(horizontal: true, layerOnly: true); refreshPanels() }
+    @objc func flipLayerVertical(_ sender: Any?) { commitPendingEdits(); doc.flip(horizontal: false, layerOnly: true); refreshPanels() }
 
     @objc func rotateZoomLayer(_ sender: Any?) {
+        commitPendingEdits()
         guard let window, let layer = doc.selectedLayer else { return }
         let snapshot = layer.image
 
@@ -625,6 +671,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     }
 
     @objc func rotateImageArbitrary(_ sender: Any?) {
+        commitPendingEdits()
         guard let window else { return }
         let snapshots = doc.layers.map { $0.image }
 
@@ -707,6 +754,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     private func runEffect(title: String,
                            specs: [(name: String, min: Double, max: Double, value: Double)],
                            build: @escaping ([Double]) -> ((CIImage) -> CIImage?)) {
+        commitPendingEdits()
         guard let window, let layer = doc.selectedLayer else { return }
         let snapshot = layer.image
 
