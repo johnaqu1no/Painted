@@ -26,6 +26,13 @@ final class Document {
         return layers[selectedLayerIndex]
     }
 
+    /// The layer a paint tool may touch. A group holds layers, not pixels, so
+    /// painting on one would go into a bitmap nothing ever draws.
+    var selectedRasterLayer: Layer? {
+        guard let layer = selectedLayer, !layer.isGroup else { return nil }
+        return layer
+    }
+
     var displayName: String {
         fileURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
     }
@@ -520,7 +527,7 @@ final class Document {
     }
 
     func flip(horizontal: Bool, layerOnly: Bool = false) {
-        let targets = layerOnly ? [selectedLayer].compactMap { $0 } : layers
+        let targets = layerOnly ? [selectedRasterLayer].compactMap { $0 } : layers
         for old in targets {
             guard let img = old.image else { continue }
             old.clear()
@@ -544,7 +551,7 @@ final class Document {
     /// nothing is selected. Returns false when there was nothing to erase.
     @discardableResult
     func eraseSelection() -> Bool {
-        guard let layer = selectedLayer else { return false }
+        guard let layer = selectedRasterLayer else { return false }
         let region = selectionPath ?? CGPath(rect: bounds, transform: nil)
         layer.context.saveGState()
         layer.context.addPath(region)
@@ -560,7 +567,7 @@ final class Document {
     /// corner, or at the top-left of the current selection when there is one.
     @discardableResult
     func paste(_ image: CGImage, at origin: CGPoint? = nil) -> CGRect? {
-        guard let layer = selectedLayer else { return nil }
+        guard let layer = selectedRasterLayer else { return nil }
         let size = CGSize(width: image.width, height: image.height)
         let corner = origin
             ?? selectionPath?.boundingBoxOfPath.origin.applying(

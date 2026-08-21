@@ -155,6 +155,14 @@ final class ToolEngine {
         previewPath = nil
         previewStyle = .shape
 
+        // A group is a folder of layers, not a canvas: painting into one would
+        // land in a bitmap that never gets drawn.
+        if settings.tool.editsPixels, doc.selectedLayer?.isGroup == true {
+            onStatus?("That is a group — select a layer inside it to paint")
+            isDragging = false
+            return
+        }
+
         switch settings.tool {
         case .paintbrush, .pencil, .eraser:
             dab(from: p, to: p)

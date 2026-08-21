@@ -50,6 +50,17 @@ enum ToolID: String, CaseIterable {
         }
     }
 
+    /// Tools that change pixels, and so need a layer rather than a group.
+    var editsPixels: Bool {
+        switch self {
+        case .rectangleSelect, .ellipseSelect, .lassoSelect, .magicWand,
+             .moveSelection, .zoom, .pan, .colorPicker:
+            return false
+        default:
+            return true
+        }
+    }
+
     /// SF Symbol used in the Tools palette.
     var symbol: String {
         switch self {

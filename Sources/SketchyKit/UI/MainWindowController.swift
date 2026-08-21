@@ -583,7 +583,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     }
 
     @objc func fillSelection(_ sender: Any?) {
-        guard let layer = doc.selectedLayer else { return }
+        guard let layer = doc.selectedRasterLayer else { return groupWarning() }
         let sel = doc.selectionPath ?? CGPath(rect: doc.bounds, transform: nil)
         layer.context.saveGState()
         layer.context.addPath(sel)
@@ -665,6 +665,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     @objc func deleteLayer(_ sender: Any?) { commitPendingEdits(); doc.deleteSelectedLayer(); refreshPanels() }
     @objc func duplicateLayer(_ sender: Any?) { commitPendingEdits(); doc.duplicateSelectedLayer(); refreshPanels() }
 
+    /// Says why nothing happened when a group is selected.
+    private func groupWarning() {
+        statusBar.flash("That is a group — select a layer inside it first",
+                        thenHintFor: settings.tool)
+    }
+
     @objc func groupLayer(_ sender: Any?) {
         commitPendingEdits()
         doc.groupSelected()
@@ -687,7 +693,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
 
     @objc func rotateZoomLayer(_ sender: Any?) {
         commitPendingEdits()
-        guard let window, let layer = doc.selectedLayer else { return }
+        guard let layer = doc.selectedRasterLayer else { return groupWarning() }
+        guard let window else { return }
         let snapshot = layer.image
 
         func apply(_ v: [Double]) {
@@ -807,7 +814,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
                            specs: [(name: String, min: Double, max: Double, value: Double)],
                            build: @escaping ([Double]) -> ((CIImage) -> CIImage?)) {
         commitPendingEdits()
-        guard let window, let layer = doc.selectedLayer else { return }
+        guard let layer = doc.selectedRasterLayer else { return groupWarning() }
+        guard let window else { return }
         let snapshot = layer.image
 
         func apply(_ values: [Double]) {

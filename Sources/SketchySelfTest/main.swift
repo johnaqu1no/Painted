@@ -1709,6 +1709,83 @@ windowSection("the layers palette folds a group away") {
     equal(panel.visibleRows.count, 3, "expanding brings them back")
 }
 
+section("a group is not a canvas")
+do {
+    let doc = Document(width: 20, height: 20, background: nil)
+    doc.selectedLayer?.fill(with: .red)
+    doc.groupSelected()
+    check(doc.selectedLayer?.isGroup == true, "the group is selected")
+    check(doc.selectedRasterLayer == nil, "and offers nothing to paint on")
+
+    let settings = ToolSettings()
+    settings.tool = .paintbrush
+    settings.brushWidth = 10
+    let engine = ToolEngine(doc: doc, settings: settings)
+    var status = ""
+    engine.onStatus = { status = $0 }
+    engine.primaryColor = .blue
+    engine.mouseDown(at: CGPoint(x: 10, y: 10), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 12, y: 12), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 12, y: 12), modifiers: [])
+    check(status.contains("group"), "painting says why it did nothing")
+    check((pixel(doc, 10, 10)?.b ?? 255) < 40, "and nothing is painted")
+    check(!doc.history.canUndo || doc.history.currentTitle != "Paintbrush",
+          "no empty step lands in history")
+
+    // Selection tools still work on a group: they belong to the document.
+    settings.tool = .rectangleSelect
+    engine.mouseDown(at: CGPoint(x: 2, y: 2), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 8, y: 8), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 8, y: 8), modifiers: [])
+    check(doc.selectionPath != nil, "selecting works with a group selected")
+
+    // And the document commands refuse rather than paint into nothing.
+    check(!doc.eraseSelection(), "erase does nothing on a group")
+    check(doc.paste(Layer(width: 4, height: 4, name: "clip").image!) == nil,
+          "and neither does paste")
+}
+
+section("healing brush through the engine")
+do {
+    let doc = Document(width: 60, height: 30, background: nil)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    layer.fill(with: NSColor(white: 0.45, alpha: 1))
+    layer.context.setFillColor(NSColor.black.cgColor)
+    layer.context.fill(CGRect(x: 28, y: 12, width: 6, height: 6))
+
+    let settings = ToolSettings()
+    settings.tool = .healingBrush
+    settings.brushWidth = 12
+    let engine = ToolEngine(doc: doc, settings: settings)
+
+    // No source set yet: the first stroke must not change anything.
+    engine.mouseDown(at: CGPoint(x: 31, y: 15), rightButton: false, modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 31, y: 15), modifiers: [])
+    check((PixelOps.sample(layer, x: 31, y: 15)?.r ?? 255) < 20, "no source, no heal")
+
+    // ⌥-click sets the source, then a drag heals.
+    engine.mouseDown(at: CGPoint(x: 10, y: 15), rightButton: false, modifiers: [.option])
+    engine.mouseDown(at: CGPoint(x: 31, y: 15), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 32, y: 15), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 32, y: 15), modifiers: [])
+    check((PixelOps.sample(layer, x: 31, y: 15)?.r ?? 0) > 60, "the drag heals the blemish")
+    equal(doc.history.currentTitle, "Healing Brush", "and lands in history")
+
+    // Spot healing needs no source at all.
+    let spotDoc = Document(width: 60, height: 30, background: nil)
+    guard let spot = spotDoc.selectedLayer else { fatalError("no layer") }
+    spot.fill(with: NSColor(white: 0.45, alpha: 1))
+    spot.context.setFillColor(NSColor.black.cgColor)
+    spot.context.fill(CGRect(x: 28, y: 12, width: 6, height: 6))
+    let spotSettings = ToolSettings()
+    spotSettings.tool = .spotHealing
+    spotSettings.brushWidth = 12
+    let spotEngine = ToolEngine(doc: spotDoc, settings: spotSettings)
+    spotEngine.mouseDown(at: CGPoint(x: 31, y: 15), rightButton: false, modifiers: [])
+    spotEngine.mouseUp(at: CGPoint(x: 31, y: 15), modifiers: [])
+    check((PixelOps.sample(spot, x: 31, y: 15)?.r ?? 0) > 60, "spot healing needs no source")
+}
+
 section("healing brush")
 do {
     // A light half and a dark half, with a black blemish in the dark one.
