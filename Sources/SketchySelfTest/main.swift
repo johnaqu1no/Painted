@@ -1417,6 +1417,38 @@ do {
     equal(centered.history.currentTitle, "Canvas Size", "one history step")
 }
 
+section("editing after a rotate")
+do {
+    // 20x10, red on the left, blue on the right. A clockwise turn puts red at
+    // the top of a 10x20 canvas.
+    let doc = Document(width: 20, height: 10, background: nil)
+    let l = doc.selectedLayer!
+    l.context.setFillColor(NSColor.red.cgColor)
+    l.context.fill(CGRect(x: 0, y: 0, width: 10, height: 10))
+    l.context.setFillColor(NSColor.blue.cgColor)
+    l.context.fill(CGRect(x: 10, y: 0, width: 10, height: 10))
+    doc.commit("Fill")
+    doc.rotate(turns: 3)
+
+    equal(doc.width, 10, "the turn swaps the canvas width")
+    equal(pixel(doc, 5, 17)?.r ?? 0, 255, "red lands at the top")
+    equal(pixel(doc, 5, 2)?.b ?? 0, 255, "blue at the bottom")
+
+    // Drawing has to land where it is asked for: a rotate that leaves its
+    // transform on the layer sends every later edit somewhere else.
+    let settings = ToolSettings()
+    settings.tool = .moveSelectedPixels
+    let engine = ToolEngine(doc: doc, settings: settings)
+    doc.selectionPath = CGPath(rect: CGRect(x: 0, y: 12, width: 10, height: 8), transform: nil)
+    engine.mouseDown(at: CGPoint(x: 5, y: 16), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 5, y: 6), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 5, y: 6), modifiers: [])
+    engine.commitFloatingPixels()
+
+    equal(pixel(doc, 5, 6)?.r ?? 0, 255, "moved pixels carry the rotated image")
+    equal(pixel(doc, 5, 17)?.a ?? 255, 0, "and the place they came from is empty")
+}
+
 section("crop to selection")
 do {
     let doc = Document(width: 20, height: 20, background: nil)

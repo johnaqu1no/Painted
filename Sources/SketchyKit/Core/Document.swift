@@ -283,10 +283,14 @@ final class Document {
             let l = Layer(width: nw, height: nh, name: old.name)
             l.isVisible = old.isVisible; l.opacity = old.opacity; l.blendMode = old.blendMode
             if let img = old.image {
+                // The transform has to be popped again: tools draw into this
+                // context later and would inherit the rotation.
+                l.context.saveGState()
                 l.context.translateBy(x: CGFloat(nw) / 2, y: CGFloat(nh) / 2)
                 l.context.rotate(by: CGFloat(t) * .pi / 2)
                 l.context.draw(img, in: CGRect(x: -CGFloat(old.width) / 2, y: -CGFloat(old.height) / 2,
                                                width: CGFloat(old.width), height: CGFloat(old.height)))
+                l.context.restoreGState()
             }
             return l
         }
