@@ -53,7 +53,8 @@ final class Document {
             title: title,
             layers: layers.map {
                 .init(name: $0.name, visible: $0.isVisible, opacity: $0.opacity,
-                      blend: $0.blendMode, image: $0.image)
+                      blend: $0.blendMode, image: $0.image,
+                      kind: $0.kind, depth: $0.depth, collapsed: $0.isCollapsed)
             },
             selectedIndex: selectedLayerIndex,
             width: width, height: height)
@@ -69,10 +70,12 @@ final class Document {
         width = snap.width
         height = snap.height
         layers = snap.layers.map { st in
-            let l = Layer(width: snap.width, height: snap.height, name: st.name)
+            let l = Layer(width: snap.width, height: snap.height, name: st.name,
+                          kind: st.kind, depth: st.depth)
             l.isVisible = st.visible
             l.opacity = st.opacity
             l.blendMode = st.blend
+            l.isCollapsed = st.collapsed
             if let img = st.image { l.draw(image: img) }
             return l
         }
@@ -99,33 +102,58 @@ final class Document {
     // MARK: - Layer operations
 
     func addLayer(named name: String? = nil) {
-        let l = Layer(width: width, height: height, name: name ?? "Layer \(layers.count + 1)")
-        layers.insert(l, at: selectedLayerIndex + 1)
-        selectedLayerIndex += 1
+        // Adding while a group is selected puts the layer inside it, which is
+        // what the palette shows: the new row lands under the open folder.
+        let host = selectedLayer
+        let insideGroup = host?.isGroup == true
+        let depth = host.map { $0.isGroup ? $0.depth + 1 : $0.depth } ?? 0
+        let l = Layer(width: width, height: height,
+                      name: name ?? "Layer \(layers.count + 1)", depth: depth)
+        // Inside a group the new layer goes on top of its members, which is
+        // the slot the header occupies; anywhere else it goes above the
+        // selection.
+        let at = insideGroup ? selectedLayerIndex : min(selectedLayerIndex + 1, layers.count)
+        layers.insert(l, at: at)
+        selectedLayerIndex = at
         commit("Add Layer")
         onStructureChange?()
     }
 
     func deleteSelectedLayer() {
-        guard layers.count > 1, layers.indices.contains(selectedLayerIndex) else { return }
-        layers.remove(at: selectedLayerIndex)
-        selectedLayerIndex = min(selectedLayerIndex, layers.count - 1)
+        guard layers.indices.contains(selectedLayerIndex) else { return }
+        let range = subtreeRange(at: selectedLayerIndex)
+        // Something has to be left to paint on.
+        guard layers.count - range.count >= 1,
+              layers.enumerated().contains(where: { !range.contains($0.offset) && !$0.element.isGroup })
+        else { return }
+        layers.removeSubrange(range)
+        selectedLayerIndex = min(range.lowerBound, layers.count - 1)
         commit("Delete Layer")
         onStructureChange?()
     }
 
     func duplicateSelectedLayer() {
-        guard let l = selectedLayer else { return }
-        layers.insert(l.copyLayer(), at: selectedLayerIndex + 1)
-        selectedLayerIndex += 1
+        guard layers.indices.contains(selectedLayerIndex) else { return }
+        let range = subtreeRange(at: selectedLayerIndex)
+        let copies = layers[range].map { $0.copyLayer() }
+        layers.insert(contentsOf: copies, at: range.upperBound)
+        selectedLayerIndex = range.upperBound + copies.count - 1
         commit("Duplicate Layer")
         onStructureChange?()
     }
 
     func mergeLayerDown() {
-        guard selectedLayerIndex > 0 else { return }
+        guard layers.indices.contains(selectedLayerIndex) else { return }
+        if layers[selectedLayerIndex].isGroup {
+            flattenGroup(at: selectedLayerIndex)
+            return
+        }
         let upper = layers[selectedLayerIndex]
-        let lower = layers[selectedLayerIndex - 1]
+        // Merging is only meaningful into a sibling that holds pixels.
+        let belowIndex = selectedLayerIndex - 1
+        guard belowIndex >= 0, !layers[belowIndex].isGroup,
+              layers[belowIndex].depth == upper.depth else { return }
+        let lower = layers[belowIndex]
         if let img = upper.image, upper.isVisible {
             lower.context.saveGState()
             lower.context.setAlpha(upper.opacity)
@@ -134,8 +162,158 @@ final class Document {
             lower.context.restoreGState()
         }
         layers.remove(at: selectedLayerIndex)
-        selectedLayerIndex -= 1
+        selectedLayerIndex = belowIndex
         commit("Merge Layer Down")
+        onStructureChange?()
+    }
+
+    /// Moves the selection one slot within its own group, carrying a group's
+    /// contents along with it.
+    func moveSelected(up: Bool) {
+        guard layers.indices.contains(selectedLayerIndex) else { return }
+        let range = subtreeRange(at: selectedLayerIndex)
+        let depth = layers[selectedLayerIndex].depth
+        if up {
+            let above = range.upperBound
+            guard above < layers.count, layers[above].depth == depth else { return }
+            moveSubtree(from: selectedLayerIndex, to: subtreeRange(at: above).upperBound, depth: depth)
+        } else {
+            var below = range.lowerBound - 1
+            guard below >= 0, layers[below].depth >= depth else { return }
+            // Step past a sibling group's members to reach its header.
+            while below > 0, layers[below].depth > depth { below -= 1 }
+            guard layers[below].depth == depth else { return }
+            moveSubtree(from: selectedLayerIndex, to: subtreeRange(at: below).lowerBound, depth: depth)
+        }
+    }
+
+    // MARK: - Groups
+
+    /// The entries nested inside the group at `index`. Layers are stored
+    /// bottom-first, so a group's members sit directly below its header —
+    /// exactly where the palette draws them.
+    func childRange(ofGroupAt index: Int) -> Range<Int> {
+        guard layers.indices.contains(index), layers[index].isGroup else { return index..<index }
+        let depth = layers[index].depth
+        var lower = index
+        while lower > 0, layers[lower - 1].depth > depth { lower -= 1 }
+        return lower..<index
+    }
+
+    /// A layer and everything nested under it, as one movable block.
+    func subtreeRange(at index: Int) -> Range<Int> {
+        guard layers.indices.contains(index) else { return index..<index }
+        return childRange(ofGroupAt: index).lowerBound..<(index + 1)
+    }
+
+    /// Index of the group holding `index`, if any.
+    func parentGroup(of index: Int) -> Int? {
+        guard layers.indices.contains(index) else { return nil }
+        let depth = layers[index].depth
+        guard depth > 0 else { return nil }
+        var i = index + 1
+        while i < layers.count {
+            if layers[i].depth < depth { return layers[i].isGroup ? i : nil }
+            i += 1
+        }
+        return nil
+    }
+
+    private func nextGroupName() -> String {
+        "Group \(layers.filter(\.isGroup).count + 1)"
+    }
+
+    /// Moves a layer — with its contents when it is a group — to `destination`,
+    /// an insertion index in the current stack, and renests it at `depth`.
+    func moveSubtree(from index: Int, to destination: Int, depth newDepth: Int) {
+        guard layers.indices.contains(index) else { return }
+        let range = subtreeRange(at: index)
+        // A group cannot be dropped inside itself.
+        guard destination <= range.lowerBound || destination >= range.upperBound else { return }
+        let moved = Array(layers[range])
+        let shift = newDepth - layers[index].depth
+        for l in moved { l.depth = max(0, l.depth + shift) }
+        layers.removeSubrange(range)
+        var dest = destination
+        if dest > range.lowerBound { dest -= range.count }
+        dest = dest.clamped(to: 0...layers.count)
+        layers.insert(contentsOf: moved, at: dest)
+        selectedLayerIndex = dest + moved.count - 1
+        commit("Reorder Layer")
+        onStructureChange?()
+    }
+
+    /// Dropping one layer onto another nests it: onto a group it joins that
+    /// group, onto a plain layer a new group is made around the pair.
+    func drop(subtreeAt index: Int, onto target: Int) {
+        guard layers.indices.contains(index), layers.indices.contains(target), index != target else { return }
+        let src = subtreeRange(at: index)
+        guard !src.contains(target) else { return }
+
+        if layers[target].isGroup {
+            moveSubtree(from: index, to: target, depth: layers[target].depth + 1)
+            return
+        }
+
+        let moved = Array(layers[src])
+        let hostDepth = layers[target].depth
+        let shift = hostDepth + 1 - layers[index].depth
+        for l in moved { l.depth = max(0, l.depth + shift) }
+        layers.removeSubrange(src)
+
+        var t = target
+        if t > src.lowerBound { t -= src.count }
+        let host = layers[t]
+        host.depth = hostDepth + 1
+        let header = Layer(width: width, height: height, name: nextGroupName(),
+                           kind: .group, depth: hostDepth)
+        layers.insert(contentsOf: moved, at: t + 1)
+        layers.insert(header, at: t + 1 + moved.count)
+        selectedLayerIndex = t + 1 + moved.count
+        commit("Group Layers")
+        onStructureChange?()
+    }
+
+    /// Wraps the selected layer in a new group of its own.
+    func groupSelected() {
+        guard layers.indices.contains(selectedLayerIndex) else { return }
+        let range = subtreeRange(at: selectedLayerIndex)
+        let depth = layers[selectedLayerIndex].depth
+        for l in layers[range] { l.depth += 1 }
+        let header = Layer(width: width, height: height, name: nextGroupName(),
+                           kind: .group, depth: depth)
+        layers.insert(header, at: range.upperBound)
+        selectedLayerIndex = range.upperBound
+        commit("Group Layers")
+        onStructureChange?()
+    }
+
+    /// Dissolves a group, leaving its members where they were.
+    func ungroup(at index: Int) {
+        guard layers.indices.contains(index), layers[index].isGroup else { return }
+        let range = childRange(ofGroupAt: index)
+        for l in layers[range] { l.depth = max(0, l.depth - 1) }
+        layers.remove(at: index)
+        selectedLayerIndex = min(max(0, range.upperBound - 1), layers.count - 1)
+        commit("Ungroup")
+        onStructureChange?()
+    }
+
+    /// Bakes a group down to a single raster layer.
+    func flattenGroup(at index: Int) {
+        guard layers.indices.contains(index), layers[index].isGroup else { return }
+        let group = layers[index]
+        let range = subtreeRange(at: index)
+        let flat = Layer(width: width, height: height, name: group.name, depth: group.depth)
+        flat.isVisible = group.isVisible
+        flat.opacity = group.opacity
+        flat.blendMode = group.blendMode
+        let buffer = Layer.makeContext(width: width, height: height)
+        drawStack(childRange(ofGroupAt: index), depth: group.depth + 1, into: buffer)
+        if let img = buffer.makeImage() { flat.draw(image: img) }
+        layers.replaceSubrange(range, with: [flat])
+        selectedLayerIndex = min(range.lowerBound, layers.count - 1)
+        commit("Merge Group")
         onStructureChange?()
     }
 
@@ -183,15 +361,41 @@ final class Document {
         ctx.translateBy(x: -clipped.minX, y: -clipped.minY)
         ctx.interpolationQuality = scaleX < 1 ? .medium : .none
 
-        for layer in layers where layer.isVisible && layer.opacity > 0 {
-            guard let img = layer.image else { continue }
+        drawStack(layers.indices.startIndex..<layers.count, depth: 0, into: ctx)
+        return ctx.makeImage()
+    }
+
+    /// Composites one level of the stack. A group is drawn into a buffer of
+    /// its own first so its opacity and blend mode apply to the result rather
+    /// than to each member in turn — the whole point of grouping.
+    func drawStack(_ range: Range<Int>, depth: Int, into ctx: CGContext) {
+        for i in range where layers[i].depth == depth {
+            let layer = layers[i]
+            guard layer.isVisible, layer.opacity > 0 else { continue }
+            let img: CGImage?
+            if layer.isGroup {
+                let buffer = Layer.makeContext(width: ctx.width, height: ctx.height)
+                buffer.concatenate(ctx.ctm)
+                buffer.interpolationQuality = ctx.interpolationQuality
+                drawStack(childRange(ofGroupAt: i), depth: depth + 1, into: buffer)
+                img = buffer.makeImage()
+            } else {
+                img = layer.image
+            }
+            guard let img else { continue }
             ctx.saveGState()
             ctx.setAlpha(layer.opacity)
             ctx.setBlendMode(layer.blendMode.cgBlendMode)
-            ctx.draw(img, in: bounds)
+            if layer.isGroup {
+                // The buffer is already in device pixels; drop the transform
+                // so it lands one-to-one instead of being scaled twice.
+                ctx.concatenate(ctx.ctm.inverted())
+                ctx.draw(img, in: CGRect(x: 0, y: 0, width: ctx.width, height: ctx.height))
+            } else {
+                ctx.draw(img, in: bounds)
+            }
             ctx.restoreGState()
         }
-        return ctx.makeImage()
     }
 
     // MARK: - Canvas geometry
@@ -204,8 +408,7 @@ final class Document {
         let nw = max(1, Int(clipped.width))
         let nh = max(1, Int(clipped.height))
         layers = layers.map { old in
-            let l = Layer(width: nw, height: nh, name: old.name)
-            l.isVisible = old.isVisible; l.opacity = old.opacity; l.blendMode = old.blendMode
+            let l = old.emptyCopy(width: nw, height: nh)
             if let img = old.image {
                 l.context.draw(img, in: CGRect(x: -clipped.minX, y: -clipped.minY,
                                                width: CGFloat(old.width), height: CGFloat(old.height)))
@@ -224,8 +427,7 @@ final class Document {
         let dx = (CGFloat(nw) - CGFloat(width)) * anchor.x
         let dy = (CGFloat(nh) - CGFloat(height)) * anchor.y
         layers = layers.map { old in
-            let l = Layer(width: nw, height: nh, name: old.name)
-            l.isVisible = old.isVisible; l.opacity = old.opacity; l.blendMode = old.blendMode
+            let l = old.emptyCopy(width: nw, height: nh)
             if let img = old.image {
                 l.context.draw(img, in: CGRect(x: dx, y: dy, width: CGFloat(old.width), height: CGFloat(old.height)))
             }
@@ -258,8 +460,7 @@ final class Document {
         }
 
         layers = layers.map { old in
-            let l = Layer(width: nw, height: nh, name: old.name)
-            l.isVisible = old.isVisible; l.opacity = old.opacity; l.blendMode = old.blendMode
+            let l = old.emptyCopy(width: nw, height: nh)
             if let img = old.image {
                 // Resampling is a choice about this one draw, not a setting the
                 // layer keeps for whatever a tool paints next.
@@ -284,8 +485,7 @@ final class Document {
         let nw = swap ? height : width
         let nh = swap ? width : height
         layers = layers.map { old in
-            let l = Layer(width: nw, height: nh, name: old.name)
-            l.isVisible = old.isVisible; l.opacity = old.opacity; l.blendMode = old.blendMode
+            let l = old.emptyCopy(width: nw, height: nh)
             if let img = old.image {
                 // The transform has to be popped again: tools draw into this
                 // context later and would inherit the rotation.
@@ -491,21 +691,28 @@ final class Document {
     func writeNative(to url: URL) throws {
         var layerDicts: [[String: Any]] = []
         for layer in layers {
-            guard let img = layer.image,
-                  let png = NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:]) else {
-                throw DocumentError.encodeFailed
-            }
-            layerDicts.append([
+            var dict: [String: Any] = [
                 "name": layer.name,
                 "visible": layer.isVisible,
                 "opacity": Double(layer.opacity),
                 "blend": layer.blendMode.rawValue,
-                "png": png
-            ])
+                "depth": layer.depth,
+                "group": layer.isGroup,
+                "collapsed": layer.isCollapsed
+            ]
+            if !layer.isGroup {
+                guard let img = layer.image,
+                      let png = NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:]) else {
+                    throw DocumentError.encodeFailed
+                }
+                dict["png"] = png
+            }
+            layerDicts.append(dict)
         }
         let root: [String: Any] = [
             "format": "Sketchy Document",
-            "version": 1,
+            // Version 2 added layer groups; version 1 files still open.
+            "version": 2,
             "width": width,
             "height": height,
             "selectedLayer": selectedLayerIndex,
@@ -529,7 +736,11 @@ final class Document {
         }
         let doc = Document(width: width, height: height, background: nil)
         doc.layers = layerDicts.enumerated().map { index, dict in
-            let layer = Layer(width: width, height: height, name: dict["name"] as? String ?? "Layer \(index + 1)")
+            let layer = Layer(width: width, height: height,
+                              name: dict["name"] as? String ?? "Layer \(index + 1)",
+                              kind: (dict["group"] as? Bool ?? false) ? .group : .raster,
+                              depth: dict["depth"] as? Int ?? 0)
+            layer.isCollapsed = dict["collapsed"] as? Bool ?? false
             layer.isVisible = dict["visible"] as? Bool ?? true
             layer.opacity = CGFloat(dict["opacity"] as? Double ?? 1)
             layer.blendMode = LayerBlendMode(rawValue: dict["blend"] as? String ?? "") ?? .normal

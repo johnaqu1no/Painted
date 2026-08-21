@@ -280,6 +280,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         deleteSelection(nil)
     }
 
+    func canvas(_ view: CanvasView, didAdjustSetting message: String) {
+        optionsBar.rebuild()
+        statusBar.flash(message, thenHintFor: settings.tool)
+        canvas.needsDisplay = true
+    }
+
     func canvasDidChangeMeasurement(_ view: CanvasView) {
         statusBar.setMeasurement(engine.measuredRect)
     }
@@ -658,6 +664,23 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     }
     @objc func deleteLayer(_ sender: Any?) { commitPendingEdits(); doc.deleteSelectedLayer(); refreshPanels() }
     @objc func duplicateLayer(_ sender: Any?) { commitPendingEdits(); doc.duplicateSelectedLayer(); refreshPanels() }
+
+    @objc func groupLayer(_ sender: Any?) {
+        commitPendingEdits()
+        doc.groupSelected()
+        refreshPanels()
+    }
+
+    /// Ungroups the selection, or the group holding it when a member is selected.
+    @objc func ungroupLayer(_ sender: Any?) {
+        commitPendingEdits()
+        let index = doc.selectedLayer?.isGroup == true
+            ? doc.selectedLayerIndex
+            : doc.parentGroup(of: doc.selectedLayerIndex)
+        guard let index else { return }
+        doc.ungroup(at: index)
+        refreshPanels()
+    }
     @objc func mergeLayerDown(_ sender: Any?) { commitPendingEdits(); doc.mergeLayerDown(); refreshPanels() }
     @objc func flipLayerHorizontal(_ sender: Any?) { commitPendingEdits(); doc.flip(horizontal: true, layerOnly: true); refreshPanels() }
     @objc func flipLayerVertical(_ sender: Any?) { commitPendingEdits(); doc.flip(horizontal: false, layerOnly: true); refreshPanels() }

@@ -78,17 +78,15 @@ final class PaletteHub {
         layersPanel.onDuplicate = { [weak controller] in controller?.doc.duplicateSelectedLayer(); controller?.refreshPanels() }
         layersPanel.onMerge = { [weak controller] in controller?.doc.mergeLayerDown(); controller?.refreshPanels() }
         layersPanel.onMoveUp = { [weak controller] in
-            guard let controller else { return }
-            controller.doc.moveLayer(from: controller.doc.selectedLayerIndex,
-                                     to: controller.doc.selectedLayerIndex + 1)
-            controller.refreshPanels()
+            controller?.doc.moveSelected(up: true)
+            controller?.refreshPanels()
         }
         layersPanel.onMoveDown = { [weak controller] in
-            guard let controller else { return }
-            controller.doc.moveLayer(from: controller.doc.selectedLayerIndex,
-                                     to: controller.doc.selectedLayerIndex - 1)
-            controller.refreshPanels()
+            controller?.doc.moveSelected(up: false)
+            controller?.refreshPanels()
         }
+        layersPanel.onGroup = { [weak controller] in controller?.groupLayer(nil) }
+        layersPanel.onUngroup = { [weak controller] in controller?.ungroupLayer(nil) }
         layersPanel.onProperties = { [weak controller] in controller?.showLayerProperties() }
         layersPanel.onChange = { [weak self, weak controller] in
             controller?.refreshCanvas()

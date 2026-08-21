@@ -9,6 +9,9 @@ struct HistorySnapshot {
         let opacity: CGFloat
         let blend: LayerBlendMode
         let image: CGImage?
+        var kind: Layer.Kind = .raster
+        var depth: Int = 0
+        var collapsed: Bool = false
     }
     let title: String
     let layers: [LayerState]

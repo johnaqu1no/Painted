@@ -16,6 +16,8 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     private weak var document: Document?
     /// Guards the reload → selection-changed → reload loop.
     private var isReloading = false
+    /// Model indices in the order the table shows them.
+    private(set) var visibleRows: [Int] = []
 
     var onAdd: (() -> Void)?
     var onDelete: (() -> Void)?
@@ -24,6 +26,8 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     var onMoveUp: (() -> Void)?
     var onMoveDown: (() -> Void)?
     var onProperties: (() -> Void)?
+    var onGroup: (() -> Void)?
+    var onUngroup: (() -> Void)?
     var onChange: (() -> Void)?
 
     init() {
@@ -46,6 +50,8 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         table.backgroundColor = .clear
         table.doubleAction = #selector(doubleClicked)
         table.target = self
+        table.registerForDraggedTypes([.string])
+        table.setDraggingSourceOperationMask(.move, forLocal: true)
         scroll.documentView = table
         content.addSubview(scroll)
 
@@ -77,6 +83,8 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
             ("square.stack.3d.down.right", #selector(mergeTapped), "Merge layer down"),
             ("arrow.up.square", #selector(upTapped), "Move layer up"),
             ("arrow.down.square", #selector(downTapped), "Move layer down"),
+            ("folder.badge.plus", #selector(groupTapped), "Group layer"),
+            ("folder.badge.minus", #selector(ungroupTapped), "Ungroup"),
             ("wrench.and.screwdriver", #selector(propertiesTapped), "Layer properties")
         ]
         for spec in specs {
@@ -104,15 +112,15 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         let margin: CGFloat = 12
         let spacing: CGFloat = 34
         let perRow = max(1, Int((w - margin * 2 + 6) / spacing))
-        let rows = Int(ceil(Double(buttonStrip.count) / Double(perRow)))
+        let buttonRows = Int(ceil(Double(buttonStrip.count) / Double(perRow)))
 
         for (i, b) in buttonStrip.enumerated() {
-            let row = rows - 1 - (i / perRow), col = i % perRow
+            let row = buttonRows - 1 - (i / perRow), col = i % perRow
             b.frame = NSRect(x: margin + CGFloat(col) * spacing,
                              y: 6 + CGFloat(row) * 26, width: 28, height: 24)
         }
 
-        var y = 6 + CGFloat(rows) * 26 + 4
+        var y = 6 + CGFloat(buttonRows) * 26 + 4
         let stacked = w < 200
         let labelWidth: CGFloat = 56
         let controlX = stacked ? margin : margin + labelWidth + 6
@@ -148,11 +156,10 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     func reload() {
         isReloading = true
         defer { isReloading = false }
+        rebuildRows()
         table.reloadData()
         guard let doc = document else { return }
-        // Row 0 is the top-most layer, so the table is the reverse of the model.
-        let row = doc.layers.count - 1 - doc.selectedLayerIndex
-        if doc.layers.indices.contains(doc.selectedLayerIndex) {
+        if let row = visibleRows.firstIndex(of: doc.selectedLayerIndex) {
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
         if let l = doc.selectedLayer {
@@ -162,8 +169,25 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         }
     }
 
+    /// Model indices in palette order, top-most first. A collapsed group hides
+    /// its members, so the table is not simply the layer list reversed.
+    private func rebuildRows() {
+        guard let doc = document else { visibleRows = []; return }
+        var out: [Int] = []
+        var i = doc.layers.count - 1
+        while i >= 0 {
+            out.append(i)
+            if doc.layers[i].isGroup, doc.layers[i].isCollapsed {
+                i = doc.childRange(ofGroupAt: i).lowerBound - 1
+            } else {
+                i -= 1
+            }
+        }
+        visibleRows = out
+    }
+
     private func modelIndex(forRow row: Int) -> Int {
-        (document?.layers.count ?? 1) - 1 - row
+        visibleRows.indices.contains(row) ? visibleRows[row] : (document?.layers.count ?? 1) - 1
     }
 
     // MARK: - Actions
@@ -191,6 +215,8 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     @objc private func mergeTapped() { onMerge?() }
     @objc private func upTapped() { onMoveUp?() }
     @objc private func downTapped() { onMoveDown?() }
+    @objc private func groupTapped() { onGroup?() }
+    @objc private func ungroupTapped() { onUngroup?() }
     @objc private func propertiesTapped() { onProperties?() }
     @objc private func doubleClicked() { onProperties?() }
 
@@ -205,19 +231,77 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
 
     // MARK: - Table
 
-    func numberOfRows(in tableView: NSTableView) -> Int { document?.layers.count ?? 0 }
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        if visibleRows.isEmpty, document?.layers.isEmpty == false { rebuildRows() }
+        return visibleRows.count
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let doc = document else { return nil }
         let layer = doc.layers[modelIndex(forRow: row)]
         let cell = LayerCellView()
-        cell.thumb.image = layer.thumbnail(size: NSSize(width: 34, height: 34))
-        cell.label.stringValue = layer.name
-        cell.visibility.state = layer.isVisible ? .on : .off
+        cell.apply(layer)
         cell.visibility.tag = row
         cell.visibility.target = self
         cell.visibility.action = #selector(visibilityToggled(_:))
+        cell.disclosure.tag = row
+        cell.disclosure.target = self
+        cell.disclosure.action = #selector(disclosureToggled(_:))
         return cell
+    }
+
+    @objc private func disclosureToggled(_ sender: NSButton) {
+        guard let doc = document else { return }
+        let index = modelIndex(forRow: sender.tag)
+        guard doc.layers.indices.contains(index) else { return }
+        doc.layers[index].isCollapsed.toggle()
+        reload()
+    }
+
+    // MARK: - Drag and drop
+
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        let item = NSPasteboardItem()
+        item.setString(String(row), forType: .string)
+        return item
+    }
+
+    func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo,
+                   proposedRow row: Int,
+                   proposedDropOperation op: NSTableView.DropOperation) -> NSDragOperation {
+        guard draggedRow(from: info) != nil else { return [] }
+        return .move
+    }
+
+    func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo,
+                   row: Int, dropOperation op: NSTableView.DropOperation) -> Bool {
+        guard let doc = document, let from = draggedRow(from: info) else { return false }
+        let source = modelIndex(forRow: from)
+
+        if op == .on {
+            // Dropping onto a row nests: into that group, or into a new one
+            // made around the pair.
+            doc.drop(subtreeAt: source, onto: modelIndex(forRow: row))
+        } else {
+            // A gap takes the nesting of the row it sits against.
+            let neighbourRow = min(row, visibleRows.count - 1)
+            guard visibleRows.indices.contains(neighbourRow) else { return false }
+            let neighbour = visibleRows[neighbourRow]
+            let destination = row < visibleRows.count
+                ? doc.subtreeRange(at: neighbour).upperBound
+                : doc.subtreeRange(at: neighbour).lowerBound
+            doc.moveSubtree(from: source, to: destination, depth: doc.layers[neighbour].depth)
+        }
+        reload()
+        onChange?()
+        return true
+    }
+
+    private func draggedRow(from info: NSDraggingInfo) -> Int? {
+        guard let items = info.draggingPasteboard.pasteboardItems,
+              let text = items.first?.string(forType: .string),
+              let row = Int(text), visibleRows.indices.contains(row) else { return nil }
+        return row
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -232,22 +316,30 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     }
 }
 
-/// One row in the Layers table: thumbnail, name, visibility checkbox.
+/// One row in the Layers table: thumbnail, name, visibility checkbox. Group
+/// rows are indented, show a folder, and fold their contents away.
 final class LayerCellView: NSTableCellView {
     let thumb = NSImageView()
     let label = NSTextField(labelWithString: "")
     let visibility = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    let disclosure = NSButton(image: NSImage.symbol("chevron.down", "Collapse"),
+                              target: nil, action: nil)
+
+    /// How far one level of nesting shifts a row.
+    static let indent: CGFloat = 14
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: 240, height: 40))
-        thumb.frame = NSRect(x: 4, y: 3, width: 34, height: 34)
+        disclosure.isBordered = false
+        disclosure.imagePosition = .imageOnly
+        addSubview(disclosure)
+
         thumb.imageScaling = .scaleProportionallyUpOrDown
         thumb.wantsLayer = true
         thumb.layer?.borderWidth = 1
         thumb.layer?.borderColor = NSColor(white: 0.35, alpha: 1).cgColor
         addSubview(thumb)
 
-        label.frame = NSRect(x: 46, y: 11, width: 160, height: 18)
         label.font = .systemFont(ofSize: 12)
         label.autoresizingMask = [.width]
         addSubview(label)
@@ -259,4 +351,24 @@ final class LayerCellView: NSTableCellView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    func apply(_ layer: Layer) {
+        let x = CGFloat(layer.depth) * LayerCellView.indent
+        disclosure.isHidden = !layer.isGroup
+        disclosure.frame = NSRect(x: x + 2, y: 12, width: 14, height: 16)
+        disclosure.image = NSImage.symbol(layer.isCollapsed ? "chevron.right" : "chevron.down",
+                                          layer.isCollapsed ? "Expand" : "Collapse")
+
+        let thumbX = x + (layer.isGroup ? 18 : 4)
+        thumb.frame = NSRect(x: thumbX, y: 3, width: 34, height: 34)
+        thumb.layer?.borderWidth = layer.isGroup ? 0 : 1
+        thumb.image = layer.isGroup
+            ? NSImage.symbol("folder.fill", "Group")
+            : layer.thumbnail(size: NSSize(width: 34, height: 34))
+
+        label.frame = NSRect(x: thumbX + 42, y: 11, width: max(40, 206 - thumbX), height: 18)
+        label.stringValue = layer.name
+        label.font = layer.isGroup ? .boldSystemFont(ofSize: 12) : .systemFont(ofSize: 12)
+        visibility.state = layer.isVisible ? .on : .off
+    }
 }

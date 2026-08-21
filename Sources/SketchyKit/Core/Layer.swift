@@ -4,20 +4,45 @@ import CoreGraphics
 /// A single raster layer. Pixels live in a premultiplied BGRA8 bitmap context
 /// so tools can both draw with Core Graphics and poke individual pixels.
 final class Layer {
+    /// A group holds no pixels of its own: it composites the layers nested
+    /// under it as a unit so one opacity or blend mode covers the lot.
+    enum Kind {
+        case raster, group
+    }
+
     let width: Int
     let height: Int
     var name: String
     var isVisible: Bool = true
     var opacity: CGFloat = 1.0
     var blendMode: LayerBlendMode = .normal
+    var kind: Kind = .raster
+    /// How deep this entry sits in the stack: 0 is top level, 1 is inside one
+    /// group, and so on. The layer list stays flat and reads its nesting from
+    /// this, the way the Layers palette draws it.
+    var depth: Int = 0
+    /// Whether a group hides its members in the palette. Purely presentation.
+    var isCollapsed: Bool = false
 
-    private(set) var context: CGContext
+    var isGroup: Bool { kind == .group }
 
-    init(width: Int, height: Int, name: String) {
+    /// The bitmap, allocated the first time something draws into it. Groups
+    /// never touch it, so a folder costs no memory.
+    private var storage: CGContext?
+
+    init(width: Int, height: Int, name: String, kind: Kind = .raster, depth: Int = 0) {
         self.width = max(1, width)
         self.height = max(1, height)
         self.name = name
-        self.context = Layer.makeContext(width: self.width, height: self.height)
+        self.kind = kind
+        self.depth = depth
+    }
+
+    var context: CGContext {
+        if let storage { return storage }
+        let ctx = Layer.makeContext(width: width, height: height)
+        storage = ctx
+        return ctx
     }
 
     static func makeContext(width: Int, height: Int) -> CGContext {
@@ -37,7 +62,10 @@ final class Layer {
         return ctx
     }
 
-    var image: CGImage? { context.makeImage() }
+    var image: CGImage? {
+        guard !isGroup else { return nil }
+        return context.makeImage()
+    }
 
     /// Raw pixel access (BGRA order, premultiplied).
     var data: UnsafeMutablePointer<UInt8>? {
@@ -47,6 +75,7 @@ final class Layer {
     var bytesPerRow: Int { context.bytesPerRow }
 
     func clear() {
+        guard storage != nil else { return }
         context.clear(CGRect(x: 0, y: 0, width: width, height: height))
     }
 
@@ -70,11 +99,24 @@ final class Layer {
     }
 
     func copyLayer(named newName: String? = nil) -> Layer {
-        let l = Layer(width: width, height: height, name: newName ?? "\(name) copy")
+        let l = Layer(width: width, height: height, name: newName ?? "\(name) copy",
+                      kind: kind, depth: depth)
         if let img = image { l.draw(image: img) }
         l.isVisible = isVisible
         l.opacity = opacity
         l.blendMode = blendMode
+        l.isCollapsed = isCollapsed
+        return l
+    }
+
+    /// An empty layer of a different size carrying this one's settings, for
+    /// the document commands that rebuild the whole stack.
+    func emptyCopy(width: Int, height: Int) -> Layer {
+        let l = Layer(width: width, height: height, name: name, kind: kind, depth: depth)
+        l.isVisible = isVisible
+        l.opacity = opacity
+        l.blendMode = blendMode
+        l.isCollapsed = isCollapsed
         return l
     }
 
