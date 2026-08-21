@@ -393,3 +393,144 @@ extension PixelOps {
         return best?.offset
     }
 }
+
+// MARK: - Smudge, blur and sharpen
+
+extension PixelOps {
+
+    /// Box-blurs a patch. Two passes make the falloff smooth enough that a
+    /// blur dab does not show its square footprint.
+    static func softened(_ patch: Patch, radius: Int) -> Patch {
+        guard radius > 0 else { return patch }
+        var current = patch
+        for _ in 0..<2 {
+            current = boxPass(current, radius: radius, horizontal: true)
+            current = boxPass(current, radius: radius, horizontal: false)
+        }
+        return current
+    }
+
+    private static func boxPass(_ patch: Patch, radius: Int, horizontal: Bool) -> Patch {
+        var out = patch
+        let length = horizontal ? patch.width : patch.height
+        let lines = horizontal ? patch.height : patch.width
+        for line in 0..<lines {
+            for i in 0..<length {
+                var sums = [Float](repeating: 0, count: 4)
+                var count: Float = 0
+                for k in (i - radius)...(i + radius) {
+                    let j = k.clamped(to: 0...(length - 1))
+                    for c in 0..<4 { sums[c] += patch[horizontal ? j : line, horizontal ? line : j, c] }
+                    count += 1
+                }
+                for c in 0..<4 {
+                    out[horizontal ? i : line, horizontal ? line : i, c] = sums[c] / count
+                }
+            }
+        }
+        return out
+    }
+
+    /// The shared shape of every brush that reworks pixels in place: read a
+    /// patch, ask `target` what each pixel should become, and fade the answer
+    /// in over the round tip.
+    @discardableResult
+    static func applyDab(layer: Layer,
+                         at center: CGPoint,
+                         diameter: CGFloat,
+                         hardness: CGFloat,
+                         amount: CGFloat = 1,
+                         margin extra: Int = 0,
+                         clip: CGPath? = nil,
+                         target: (Patch, Int, Int) -> [Float]) -> Bool {
+        let radius = max(1, Int((diameter / 2).rounded()))
+        let outer = radius + extra
+        let side = outer * 2 + 1
+        let originX = Int(center.x.rounded()) - outer
+        let originY = Int(center.y.rounded()) - outer
+        guard let dest = readPatch(layer, rect: CGRect(x: originX, y: originY, width: side, height: side)),
+              let d = layer.data else { return false }
+
+        let stride = layer.bytesPerRow
+        let core = max(0.01, hardness.clamped(to: 0...1))
+        let strength = Float(amount.clamped(to: 0...1))
+        for row in 0..<side {
+            let y = originY + row
+            for col in 0..<side {
+                let x = originX + col
+                guard x >= 0, y >= 0, x < layer.width, y < layer.height else { continue }
+                let dx = Float(col - outer), dy = Float(row - outer)
+                let distance = (dx * dx + dy * dy).squareRoot() / Float(radius)
+                guard distance <= 1 else { continue }
+                var weight = distance <= Float(core) ? 1
+                    : 1 - (distance - Float(core)) / (1 - Float(core))
+                weight = weight.clamped(to: 0...1) * strength
+                guard weight > 0 else { continue }
+                if let clip, !clip.contains(CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5),
+                                            using: .evenOdd) { continue }
+
+                let wanted = target(dest, col, row)
+                let o = (layer.height - 1 - y) * stride + x * 4
+                let alpha = dest[col, row, 3] + (wanted[3] - dest[col, row, 3]) * weight
+                for c in 0..<3 {
+                    let straight = dest[col, row, c] + (wanted[c] - dest[col, row, c]) * weight
+                    let premultiplied = (straight * alpha / 255).clamped(to: 0...255)
+                    d[o + (2 - c)] = UInt8(premultiplied.rounded())
+                }
+                d[o + 3] = UInt8(alpha.clamped(to: 0...255).rounded())
+            }
+        }
+        return true
+    }
+
+    /// Softens what the tip covers.
+    @discardableResult
+    static func blurDab(layer: Layer, at center: CGPoint, diameter: CGFloat,
+                        strength: CGFloat, hardness: CGFloat, clip: CGPath? = nil) -> Bool {
+        let radius = max(1, Int((diameter / 2).rounded()))
+        let reach = max(1, radius / 2)
+        var blurred: Patch?
+        return applyDab(layer: layer, at: center, diameter: diameter, hardness: hardness,
+                        amount: strength, margin: reach, clip: clip) { dest, col, row in
+            if blurred == nil { blurred = softened(dest, radius: reach) }
+            guard let blurred else { return [0, 0, 0, 0] }
+            return [blurred[col, row, 0], blurred[col, row, 1],
+                    blurred[col, row, 2], blurred[col, row, 3]]
+        }
+    }
+
+    /// Adds back the detail a blur would remove, which is what sharpening is.
+    @discardableResult
+    static func sharpenDab(layer: Layer, at center: CGPoint, diameter: CGFloat,
+                           strength: CGFloat, hardness: CGFloat, clip: CGPath? = nil) -> Bool {
+        let radius = max(1, Int((diameter / 2).rounded()))
+        let reach = max(1, radius / 2)
+        var blurred: Patch?
+        return applyDab(layer: layer, at: center, diameter: diameter, hardness: hardness,
+                        amount: strength, margin: reach, clip: clip) { dest, col, row in
+            if blurred == nil { blurred = softened(dest, radius: reach) }
+            guard let blurred else { return [0, 0, 0, 0] }
+            return (0..<4).map { c in
+                let detail = dest[col, row, c] - blurred[col, row, c]
+                return (dest[col, row, c] + detail * 2).clamped(to: 0...255)
+            }
+        }
+    }
+
+    /// Drags color along the stroke, the way a finger pulls wet paint: each
+    /// dab pastes what sat under the previous one.
+    @discardableResult
+    static func smudgeDab(layer: Layer, from a: CGPoint, to b: CGPoint, diameter: CGFloat,
+                          strength: CGFloat, hardness: CGFloat, clip: CGPath? = nil) -> Bool {
+        let radius = max(1, Int((diameter / 2).rounded()))
+        let side = radius * 2 + 1
+        let pickup = CGRect(x: Int(a.x.rounded()) - radius, y: Int(a.y.rounded()) - radius,
+                            width: side, height: side)
+        guard let carried = readPatch(layer, rect: pickup) else { return false }
+        return applyDab(layer: layer, at: b, diameter: diameter, hardness: hardness,
+                        amount: strength, clip: clip) { _, col, row in
+            [carried[col, row, 0], carried[col, row, 1],
+             carried[col, row, 2], carried[col, row, 3]]
+        }
+    }
+}

@@ -141,6 +141,12 @@ final class StatusBar: NSView {
             parts = [("⌥-click", "Set source"), ("Drag", "Heal"), ("⌥scroll", "Size")]
         case .spotHealing:
             parts = [("Drag", "Heal over the blemish"), ("⌥scroll", "Size")]
+        case .smudge:
+            parts = [("Drag", "Pull the color along"), ("⌥scroll", "Size"),
+                     ("⌥⇧scroll", "Strength")]
+        case .blurBrush, .sharpenBrush:
+            parts = [("Drag", tool == .blurBrush ? "Soften" : "Sharpen"),
+                     ("⌥scroll", "Size"), ("⌥⇧scroll", "Strength")]
         case .gradient:
             parts = [("Drag", "Place gradient"), ("Right-drag", "Reverse colors"),
                      ("⌥scroll", "Strength")]

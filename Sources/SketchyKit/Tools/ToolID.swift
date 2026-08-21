@@ -10,6 +10,7 @@ enum ToolID: String, CaseIterable {
     case pencil, colorPicker
     case cloneStamp, recolor
     case healingBrush, spotHealing
+    case smudge, blurBrush, sharpenBrush
     case text, line
     case shapes
 
@@ -32,6 +33,9 @@ enum ToolID: String, CaseIterable {
         case .cloneStamp:         return "Clone Stamp"
         case .healingBrush:       return "Healing Brush"
         case .spotHealing:        return "Spot Healing Brush"
+        case .smudge:             return "Smudge"
+        case .blurBrush:          return "Blur"
+        case .sharpenBrush:       return "Sharpen"
         case .recolor:            return "Recolor"
         case .text:               return "Text"
         case .line:               return "Line / Curve"
@@ -44,7 +48,8 @@ enum ToolID: String, CaseIterable {
     var hasBrushTip: Bool {
         switch self {
         case .paintbrush, .eraser, .cloneStamp, .recolor,
-             .healingBrush, .spotHealing:
+             .healingBrush, .spotHealing,
+             .smudge, .blurBrush, .sharpenBrush:
             return true
         default: return false
         }
@@ -81,6 +86,9 @@ enum ToolID: String, CaseIterable {
         case .cloneStamp:         return "doc.on.doc"
         case .healingBrush:       return "bandage"
         case .spotHealing:        return "bandage.fill"
+        case .smudge:             return "hand.draw"
+        case .blurBrush:          return "wind"
+        case .sharpenBrush:       return "sparkles"
         case .recolor:            return "circle.lefthalf.filled"
         case .text:               return "textformat"
         case .line:               return "line.diagonal"
@@ -107,6 +115,9 @@ enum ToolID: String, CaseIterable {
         case .cloneStamp:         return "l"
         case .healingBrush:       return "j"
         case .spotHealing:        return "j"
+        case .smudge:             return "u"
+        case .blurBrush:          return "y"
+        case .sharpenBrush:       return "y"
         case .recolor:            return "r"
         case .text:               return "t"
         case .line:               return "o"
@@ -132,7 +143,9 @@ enum ToolID: String, CaseIterable {
         .pencil, .colorPicker,
         .cloneStamp, .recolor,
         .healingBrush, .spotHealing,
-        .text, .line,
+        .smudge, .blurBrush,
+        .sharpenBrush, .text,
+        .line,
         .shapes
     ]
 }
@@ -254,6 +267,8 @@ final class ToolSettings {
     var gradientKind: GradientKind = .linear
     /// How opaque a gradient lands, so it can be layered over what is there.
     var gradientStrength: CGFloat = 1
+    /// How hard smudge, blur and sharpen push, per dab.
+    var brushStrength: CGFloat = 0.5
     var selectionMode: SelectionMode = .replace
     var blendMode: LayerBlendMode = .normal
     var antialiasing: Bool = true
@@ -270,7 +285,7 @@ final class ToolSettings {
     /// option is the one the tool is mostly about; the second is for the
     /// tools that have a second dial worth reaching quickly.
     enum Adjustable {
-        case size, hardness, tolerance, strength, fontSize
+        case size, hardness, tolerance, strength, brushStrength, fontSize
     }
 
     func adjustable(secondary: Bool) -> Adjustable? {
@@ -278,6 +293,8 @@ final class ToolSettings {
         case .paintbrush:                 return secondary ? .hardness : .size
         case .eraser, .cloneStamp:        return secondary ? nil : .size
         case .healingBrush, .spotHealing: return secondary ? .hardness : .size
+        case .smudge, .blurBrush,
+             .sharpenBrush:               return secondary ? .brushStrength : .size
         case .recolor:                    return secondary ? .tolerance : .size
         case .paintBucket, .magicWand:    return secondary ? nil : .tolerance
         case .gradient:                   return secondary ? nil : .strength
@@ -304,6 +321,9 @@ final class ToolSettings {
         case .strength:
             gradientStrength = (gradientStrength + steps / 20).clamped(to: 0...1)
             return "Strength \(Int(gradientStrength * 100))%"
+        case .brushStrength:
+            brushStrength = (brushStrength + steps / 20).clamped(to: 0.05...1)
+            return "Strength \(Int(brushStrength * 100))%"
         case .fontSize:
             fontSize = (fontSize + steps).clamped(to: 4...400).rounded()
             return "Font Size \(Int(fontSize))"

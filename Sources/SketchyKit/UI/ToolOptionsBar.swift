@@ -155,6 +155,11 @@ final class ToolOptionsBar: NSView {
         case .healingBrush, .spotHealing:
             addSizeControl()
             addSlider(title: "Hardness", value: settings.hardness, action: #selector(hardnessChanged(_:)))
+        case .smudge, .blurBrush, .sharpenBrush:
+            addSizeControl()
+            addSlider(title: "Strength", value: settings.brushStrength,
+                      action: #selector(brushStrengthChanged(_:)))
+            addSlider(title: "Hardness", value: settings.hardness, action: #selector(hardnessChanged(_:)))
         case .moveSelectedPixels:
             stack.addArrangedSubview(label("Scaling:"))
             stack.addArrangedSubview(popup(Resampling.allCases.map(\.rawValue),
@@ -280,6 +285,9 @@ final class ToolOptionsBar: NSView {
     }
 
     @objc private func hardnessChanged(_ sender: NSSlider) { settings.hardness = CGFloat(sender.doubleValue); onChange?() }
+    @objc private func brushStrengthChanged(_ sender: NSSlider) {
+        settings.brushStrength = CGFloat(sender.doubleValue); onChange?()
+    }
     @objc private func strengthChanged(_ sender: NSSlider) {
         settings.gradientStrength = CGFloat(sender.doubleValue); onChange?()
     }

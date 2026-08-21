@@ -1709,6 +1709,64 @@ windowSection("the layers palette folds a group away") {
     equal(panel.visibleRows.count, 3, "expanding brings them back")
 }
 
+section("blur and sharpen brushes")
+do {
+    let doc = Document(width: 40, height: 20, background: nil)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    layer.fill(with: .black)
+    layer.context.setFillColor(NSColor.white.cgColor)
+    layer.context.fill(CGRect(x: 20, y: 0, width: 20, height: 20))
+    equal(PixelOps.sample(layer, x: 19, y: 10)?.r ?? 99, 0, "the edge is hard to start")
+
+    PixelOps.blurDab(layer: layer, at: CGPoint(x: 20, y: 10), diameter: 12,
+                     strength: 1, hardness: 1)
+    let softened = PixelOps.sample(layer, x: 19, y: 10)?.r ?? 0
+    check(softened > 20, "blur bleeds the white side across")
+    check(softened < 235, "without flooding it")
+
+    // Sharpening the same spot pushes the two sides apart again.
+    let before = PixelOps.sample(layer, x: 22, y: 10)?.r ?? 0
+    PixelOps.sharpenDab(layer: layer, at: CGPoint(x: 20, y: 10), diameter: 12,
+                        strength: 1, hardness: 1)
+    let after = PixelOps.sample(layer, x: 22, y: 10)?.r ?? 0
+    check(after > before, "sharpen drives the light side lighter")
+
+    // Strength scales the effect rather than switching it on and off.
+    let gentleDoc = Document(width: 40, height: 20, background: nil)
+    guard let gentle = gentleDoc.selectedLayer else { fatalError("no layer") }
+    gentle.fill(with: .black)
+    gentle.context.setFillColor(NSColor.white.cgColor)
+    gentle.context.fill(CGRect(x: 20, y: 0, width: 20, height: 20))
+    PixelOps.blurDab(layer: gentle, at: CGPoint(x: 20, y: 10), diameter: 12,
+                     strength: 0.2, hardness: 1)
+    let light = PixelOps.sample(gentle, x: 19, y: 10)?.r ?? 0
+    check(light < softened, "a weaker dab moves the pixels less")
+}
+
+section("smudge pulls color along")
+do {
+    let doc = Document(width: 40, height: 20, background: nil)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    layer.fill(with: .red)
+    layer.context.setFillColor(NSColor.blue.cgColor)
+    layer.context.fill(CGRect(x: 0, y: 0, width: 12, height: 20))
+    equal(PixelOps.sample(layer, x: 20, y: 10)?.b ?? 99, 0, "the far side is pure red")
+
+    let settings = ToolSettings()
+    settings.tool = .smudge
+    settings.brushWidth = 10
+    settings.brushStrength = 1
+    settings.hardness = 1
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.mouseDown(at: CGPoint(x: 8, y: 10), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 20, y: 10), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 20, y: 10), modifiers: [])
+
+    check((PixelOps.sample(layer, x: 18, y: 10)?.b ?? 0) > 40, "blue is dragged into the red")
+    check((PixelOps.sample(layer, x: 35, y: 10)?.b ?? 99) < 20, "but not past where the stroke stopped")
+    equal(doc.history.currentTitle, "Smudge", "and the stroke is one undo step")
+}
+
 section("a group is not a canvas")
 do {
     let doc = Document(width: 20, height: 20, background: nil)

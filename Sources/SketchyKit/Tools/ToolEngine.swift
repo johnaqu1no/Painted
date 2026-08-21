@@ -196,6 +196,8 @@ final class ToolEngine {
             }
         case .spotHealing:
             healDab(from: p, to: p)
+        case .smudge, .blurBrush, .sharpenBrush:
+            reworkDab(from: p, to: p)
         case .paintBucket:
             guard let layer = doc.selectedLayer else { break }
             PixelOps.floodFill(layer: layer,
@@ -312,6 +314,8 @@ final class ToolEngine {
             cloneDab(at: p)
         case .healingBrush, .spotHealing:
             healDab(from: lastPoint, to: p)
+        case .smudge, .blurBrush, .sharpenBrush:
+            reworkDab(from: lastPoint, to: p)
         case .lassoSelect:
             lassoPoints.append(p)
             previewPath = lassoPath(closed: false)
@@ -360,6 +364,9 @@ final class ToolEngine {
         case .cloneStamp:  doc.commit("Clone Stamp")
         case .healingBrush: doc.commit("Healing Brush")
         case .spotHealing:  doc.commit("Spot Healing")
+        case .smudge:       doc.commit("Smudge")
+        case .blurBrush:    doc.commit("Blur")
+        case .sharpenBrush: doc.commit("Sharpen")
         case .paintBucket:
             doc.commit(pendingCommitTitle ?? "Paint Bucket")
             pendingCommitTitle = nil
@@ -831,6 +838,36 @@ final class ToolEngine {
             guard let offset else { continue }
             PixelOps.heal(layer: layer, at: p, diameter: diameter, offset: offset,
                           hardness: settings.hardness, clip: doc.selectionPath)
+        }
+    }
+
+    /// Smudge, blur and sharpen: dabs that rework what is already there
+    /// rather than laying down colour.
+    private func reworkDab(from a: CGPoint, to b: CGPoint) {
+        guard let layer = doc.selectedRasterLayer else { return }
+        let diameter = settings.brushWidth
+        let spacing = max(1, diameter * 0.25)
+        let distance = hypot(b.x - a.x, b.y - a.y)
+        let steps = max(1, Int(distance / spacing))
+        var previous = a
+        for i in 0...steps {
+            let t = steps == 0 ? 0 : CGFloat(i) / CGFloat(steps)
+            let p = CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+            switch settings.tool {
+            case .smudge:
+                PixelOps.smudgeDab(layer: layer, from: previous, to: p, diameter: diameter,
+                                   strength: settings.brushStrength, hardness: settings.hardness,
+                                   clip: doc.selectionPath)
+            case .blurBrush:
+                PixelOps.blurDab(layer: layer, at: p, diameter: diameter,
+                                 strength: settings.brushStrength, hardness: settings.hardness,
+                                 clip: doc.selectionPath)
+            default:
+                PixelOps.sharpenDab(layer: layer, at: p, diameter: diameter,
+                                    strength: settings.brushStrength, hardness: settings.hardness,
+                                    clip: doc.selectionPath)
+            }
+            previous = p
         }
     }
 
