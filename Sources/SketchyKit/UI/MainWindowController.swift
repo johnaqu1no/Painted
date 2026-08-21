@@ -598,28 +598,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     @objc func cropToSelection(_ sender: Any?) {
         commitPendingEdits()
         guard let sel = doc.selectionPath else { return }
-        let box = sel.boundingBoxOfPath.integral.intersection(doc.bounds)
-        guard !box.isEmpty else { return }
-        for layer in doc.layers {
-            guard let img = layer.image else { continue }
-            layer.clear()
-            layer.context.draw(img, in: doc.bounds)
-        }
-        let cropped = doc.layers.map { layer -> Layer in
-            let l = Layer(width: Int(box.width), height: Int(box.height), name: layer.name)
-            l.isVisible = layer.isVisible; l.opacity = layer.opacity; l.blendMode = layer.blendMode
-            if let img = layer.image {
-                l.context.translateBy(x: -box.minX, y: -box.minY)
-                l.context.draw(img, in: doc.bounds)
-            }
-            return l
-        }
-        let newDoc = Document(width: Int(box.width), height: Int(box.height), background: nil)
-        newDoc.layers = cropped
-        newDoc.selectedLayerIndex = min(doc.selectedLayerIndex, cropped.count - 1)
-        newDoc.fileURL = doc.fileURL
-        newDoc.history.reset(with: newDoc.snapshot(title: "Crop to Selection"))
-        replace(doc: newDoc)
+        doc.crop(to: sel.boundingBoxOfPath)
+        canvas.zoomToFit()
+        if canvas.zoom > 1 { canvas.zoom = 1 }
+        refreshPanels()
     }
 
     @objc func resizeImage(_ sender: Any?) {

@@ -196,6 +196,28 @@ final class Document {
 
     // MARK: - Canvas geometry
 
+    /// Trims the canvas down to `box`, keeping history so the crop can be
+    /// undone like any other edit.
+    func crop(to box: CGRect) {
+        let clipped = box.integral.intersection(bounds)
+        guard !clipped.isEmpty else { return }
+        let nw = max(1, Int(clipped.width))
+        let nh = max(1, Int(clipped.height))
+        layers = layers.map { old in
+            let l = Layer(width: nw, height: nh, name: old.name)
+            l.isVisible = old.isVisible; l.opacity = old.opacity; l.blendMode = old.blendMode
+            if let img = old.image {
+                l.context.draw(img, in: CGRect(x: -clipped.minX, y: -clipped.minY,
+                                               width: CGFloat(old.width), height: CGFloat(old.height)))
+            }
+            return l
+        }
+        width = nw; height = nh
+        selectionPath = nil
+        commit("Crop to Selection")
+        onStructureChange?()
+    }
+
     func resizeCanvas(to newSize: CGSize, anchor: CGPoint = CGPoint(x: 0.5, y: 0.5)) {
         let nw = max(1, Int(newSize.width.rounded()))
         let nh = max(1, Int(newSize.height.rounded()))

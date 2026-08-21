@@ -1417,6 +1417,27 @@ do {
     equal(centered.history.currentTitle, "Canvas Size", "one history step")
 }
 
+section("crop to selection")
+do {
+    let doc = Document(width: 20, height: 20, background: nil)
+    doc.selectedLayer?.fill(with: .red)
+    doc.commit("Fill")
+    doc.selectionPath = CGPath(rect: CGRect(x: 4, y: 6, width: 8, height: 5), transform: nil)
+    doc.crop(to: doc.selectionPath!.boundingBoxOfPath)
+
+    equal(doc.width, 8, "crop takes the selection width")
+    equal(doc.height, 5, "crop takes the selection height")
+    check(doc.selectionPath == nil, "and drops the selection it cropped to")
+
+    // The whole point: a crop is an edit, not a new document.
+    equal(doc.history.currentTitle, "Crop to Selection", "crop lands in history")
+    check(doc.history.canUndo, "so it can be undone")
+    doc.undo()
+    equal(doc.width, 20, "undo brings the canvas back")
+    equal(doc.height, 20, "at its full height")
+    check((pixel(doc, 18, 18)?.a ?? 0) > 200, "with the pixels the crop threw away")
+}
+
 section("image size anchor")
 do {
     // A wide image resized into a square box keeps its shape when fitting.
