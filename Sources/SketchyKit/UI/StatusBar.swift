@@ -126,17 +126,24 @@ final class StatusBar: NSView {
                      ("⇧", "Constrain"), ("⌘D", "Deselect")]
         case .magicWand:
             parts = [("Click", "Select similar"), ("⌥", "Add"), ("⌘", "Subtract"),
-                     ("Tolerance", "Adjust in the options bar")]
+                     ("⌥scroll", "Tolerance")]
         case .paintbrush, .pencil, .eraser:
-            parts = [("Drag", "Paint"), ("Right-drag", "Secondary color"), ("[ ]", "Brush size")]
+            parts = [("Drag", "Paint"), ("Right-drag", "Secondary color"),
+                     ("[ ]", "Brush size"), ("⌥scroll", "Size")]
         case .paintBucket:
-            parts = [("Click", "Fill"), ("Right-click", "Fill with secondary")]
+            parts = [("Click", "Fill"), ("Right-click", "Fill with secondary"),
+                     ("⌥scroll", "Tolerance")]
         case .colorPicker:
             parts = [("Click", "Pick primary"), ("Right-click", "Pick secondary")]
         case .cloneStamp:
             parts = [("⌥-click", "Set source"), ("Drag", "Clone")]
+        case .healingBrush:
+            parts = [("⌥-click", "Set source"), ("Drag", "Heal"), ("⌥scroll", "Size")]
+        case .spotHealing:
+            parts = [("Drag", "Heal over the blemish"), ("⌥scroll", "Size")]
         case .gradient:
-            parts = [("Drag", "Place gradient"), ("Right-drag", "Reverse colors")]
+            parts = [("Drag", "Place gradient"), ("Right-drag", "Reverse colors"),
+                     ("⌥scroll", "Strength")]
         case .text:
             parts = [("Click", "Place text"), ("⏎", "Commit"), ("⎋", "Cancel")]
         case .zoom:

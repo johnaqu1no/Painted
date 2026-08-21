@@ -125,6 +125,8 @@ final class ToolOptionsBar: NSView {
                               width: 130, action: #selector(gradientChanged(_:)))
             stack.addArrangedSubview(label("Gradient:"))
             stack.addArrangedSubview(kinds)
+            addSlider(title: "Strength", value: settings.gradientStrength,
+                      action: #selector(strengthChanged(_:)))
             addBlend()
         case .text:
             let fonts = NSFontManager.shared.availableFontFamilies
@@ -150,6 +152,9 @@ final class ToolOptionsBar: NSView {
             if settings.tool == .recolor {
                 addSlider(title: "Tolerance", value: settings.tolerance, action: #selector(toleranceChanged(_:)))
             }
+        case .healingBrush, .spotHealing:
+            addSizeControl()
+            addSlider(title: "Hardness", value: settings.hardness, action: #selector(hardnessChanged(_:)))
         case .moveSelectedPixels:
             stack.addArrangedSubview(label("Scaling:"))
             stack.addArrangedSubview(popup(Resampling.allCases.map(\.rawValue),
@@ -275,6 +280,9 @@ final class ToolOptionsBar: NSView {
     }
 
     @objc private func hardnessChanged(_ sender: NSSlider) { settings.hardness = CGFloat(sender.doubleValue); onChange?() }
+    @objc private func strengthChanged(_ sender: NSSlider) {
+        settings.gradientStrength = CGFloat(sender.doubleValue); onChange?()
+    }
     @objc private func toleranceChanged(_ sender: NSSlider) { settings.tolerance = CGFloat(sender.doubleValue); onChange?() }
     @objc private func strokeChanged(_ sender: NSPopUpButton) {
         settings.strokeStyle = StrokeStyle(rawValue: sender.titleOfSelectedItem ?? "") ?? .solid; onChange?()

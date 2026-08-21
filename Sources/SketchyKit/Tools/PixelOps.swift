@@ -27,6 +27,17 @@ enum PixelOps {
                 blue: CGFloat(p.b) / 255, alpha: CGFloat(p.a) / 255)
     }
 
+    /// How far a single channel may drift and still count as the same color.
+    ///
+    /// Tolerance is how far any single channel may drift; summing the channels
+    /// instead lets three small differences add up to a match. The curve keeps
+    /// the low end of the slider fine-grained — a straight percentage spends
+    /// most of its travel flooding everything.
+    static func channelLimit(for tolerance: CGFloat) -> Int {
+        let t = tolerance.clamped(to: 0...1)
+        return Int((t * t * t * 255).rounded())
+    }
+
     /// Builds a boolean mask of pixels matching the seed color.
     /// `contiguous == false` scans the whole layer instead of flooding.
     static func mask(in layer: Layer,
@@ -43,12 +54,12 @@ enum PixelOps {
         }
 
         let seed = px(seedX, seedY)
-        // Tolerance is a fraction of the max possible RGBA distance.
-        let limit = Int(tolerance * 255.0 * 4)
+        let limit = channelLimit(for: tolerance)
 
         func matches(_ x: Int, _ y: Int) -> Bool {
             let c = px(x, y)
-            let dist = abs(c.0 - seed.0) + abs(c.1 - seed.1) + abs(c.2 - seed.2) + abs(c.3 - seed.3)
+            let dist = max(max(abs(c.0 - seed.0), abs(c.1 - seed.1)),
+                           max(abs(c.2 - seed.2), abs(c.3 - seed.3)))
             return dist <= limit
         }
 
@@ -190,7 +201,7 @@ enum PixelOps {
         let t = target.srgb
         let sr = Int(s.redComponent * 255), sg = Int(s.greenComponent * 255), sb = Int(s.blueComponent * 255)
         let tr = UInt8(t.redComponent * 255), tg = UInt8(t.greenComponent * 255), tb = UInt8(t.blueComponent * 255)
-        let limit = Int(tolerance * 255 * 3)
+        let limit = channelLimit(for: tolerance)
 
         let x0 = max(0, Int(rect.minX)), x1 = min(w - 1, Int(rect.maxX))
         let y0 = max(0, Int(rect.minY)), y1 = min(h - 1, Int(rect.maxY))
@@ -205,12 +216,180 @@ enum PixelOps {
                 let r = Int(d[o + 2]) * 255 / a
                 let g = Int(d[o + 1]) * 255 / a
                 let b = Int(d[o + 0]) * 255 / a
-                if abs(r - sr) + abs(g - sg) + abs(b - sb) <= limit {
+                if max(abs(r - sr), max(abs(g - sg), abs(b - sb))) <= limit {
                     d[o + 2] = UInt8(Int(tr) * a / 255)
                     d[o + 1] = UInt8(Int(tg) * a / 255)
                     d[o + 0] = UInt8(Int(tb) * a / 255)
                 }
             }
         }
+    }
+}
+
+// MARK: - Healing
+
+extension PixelOps {
+
+    /// A patch of a layer as straight (un-premultiplied) float channels.
+    struct Patch {
+        var width: Int
+        var height: Int
+        /// r, g, b, a per pixel, row 0 at the top, matching the bitmap.
+        var samples: [Float]
+
+        subscript(x: Int, y: Int, c: Int) -> Float {
+            get { samples[(y * width + x) * 4 + c] }
+            set { samples[(y * width + x) * 4 + c] = newValue }
+        }
+    }
+
+    /// Reads `rect` (image coordinates) out of a layer, repeating the edge
+    /// pixels for anything that hangs over the side so a dab still works in a
+    /// corner. Returns nil only when the rectangle misses the layer entirely.
+    static func readPatch(_ layer: Layer, rect: CGRect) -> Patch? {
+        guard let d = layer.data else { return nil }
+        let x0 = Int(rect.minX), y0 = Int(rect.minY)
+        let w = Int(rect.width), h = Int(rect.height)
+        guard w > 0, h > 0,
+              rect.intersects(CGRect(x: 0, y: 0, width: layer.width, height: layer.height)) else { return nil }
+
+        var samples = [Float](repeating: 0, count: w * h * 4)
+        let stride = layer.bytesPerRow
+        for row in 0..<h {
+            let y = (y0 + row).clamped(to: 0...(layer.height - 1))
+            let src = (layer.height - 1 - y) * stride
+            for col in 0..<w {
+                let x = (x0 + col).clamped(to: 0...(layer.width - 1))
+                let o = src + x * 4
+                let a = Float(d[o + 3])
+                let scale: Float = a > 0 ? 255 / a : 0
+                let base = (row * w + col) * 4
+                samples[base + 0] = Float(d[o + 2]) * scale
+                samples[base + 1] = Float(d[o + 1]) * scale
+                samples[base + 2] = Float(d[o + 0]) * scale
+                samples[base + 3] = a
+            }
+        }
+        return Patch(width: w, height: h, samples: samples)
+    }
+
+    /// How much a patch varies, used to pick the calmest place to heal from.
+    static func variance(_ patch: Patch) -> Float {
+        let pixels = patch.width * patch.height
+        guard pixels > 0 else { return .greatestFiniteMagnitude }
+        var mean: Float = 0
+        for i in 0..<pixels {
+            mean += (patch.samples[i * 4] + patch.samples[i * 4 + 1] + patch.samples[i * 4 + 2]) / 3
+        }
+        mean /= Float(pixels)
+        var total: Float = 0
+        for i in 0..<pixels {
+            let v = (patch.samples[i * 4] + patch.samples[i * 4 + 1] + patch.samples[i * 4 + 2]) / 3
+            total += (v - mean) * (v - mean)
+        }
+        return total / Float(pixels)
+    }
+
+    /// Heals a round dab: the texture comes from `offset` away, while the
+    /// colour and shading are pulled to match the ring of pixels around the
+    /// dab. Correcting against the surrounding ring rather than the dab's own
+    /// average is what lets a heal wipe out a blemish instead of smearing it —
+    /// the blemish never gets a vote on the tone it is replaced with.
+    @discardableResult
+    static func heal(layer: Layer,
+                     at center: CGPoint,
+                     diameter: CGFloat,
+                     offset: CGSize,
+                     hardness: CGFloat,
+                     clip: CGPath? = nil) -> Bool {
+        let radius = max(1, Int((diameter / 2).rounded()))
+        // A margin outside the dab, which is where the tone is read from.
+        let margin = max(2, radius / 3)
+        let outer = radius + margin
+        let side = outer * 2 + 1
+        let originX = Int(center.x.rounded()) - outer
+        let originY = Int(center.y.rounded()) - outer
+        let destRect = CGRect(x: originX, y: originY, width: side, height: side)
+        let sourceRect = destRect.offsetBy(dx: offset.width.rounded(), dy: offset.height.rounded())
+
+        guard let dest = readPatch(layer, rect: destRect),
+              let source = readPatch(layer, rect: sourceRect),
+              let d = layer.data else { return false }
+
+        // Mean of the ring just outside the dab, in both patches.
+        var destRing = [Float](repeating: 0, count: 4)
+        var sourceRing = [Float](repeating: 0, count: 4)
+        var ringCount: Float = 0
+        for row in 0..<side {
+            for col in 0..<side {
+                let dx = Float(col - outer), dy = Float(row - outer)
+                let distance = (dx * dx + dy * dy).squareRoot()
+                guard distance > Float(radius), distance <= Float(outer) else { continue }
+                for c in 0..<4 {
+                    destRing[c] += dest[col, row, c]
+                    sourceRing[c] += source[col, row, c]
+                }
+                ringCount += 1
+            }
+        }
+        guard ringCount > 0 else { return false }
+        let correction = (0..<4).map { (destRing[$0] - sourceRing[$0]) / ringCount }
+
+        let stride = layer.bytesPerRow
+        let core = max(0.01, hardness.clamped(to: 0...1))
+        for row in 0..<side {
+            let y = originY + row
+            for col in 0..<side {
+                let x = originX + col
+                guard x >= 0, y >= 0, x < layer.width, y < layer.height else { continue }
+                // Round dab with a soft rim.
+                let dx = Float(col - outer), dy = Float(row - outer)
+                let distance = (dx * dx + dy * dy).squareRoot() / Float(radius)
+                guard distance <= 1 else { continue }
+                var weight = distance <= Float(core) ? 1
+                    : 1 - (distance - Float(core)) / (1 - Float(core))
+                weight = weight.clamped(to: 0...1)
+                if let clip, !clip.contains(CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5),
+                                            using: .evenOdd) { continue }
+
+                let o = (layer.height - 1 - y) * stride + x * 4
+                var healed = [Float](repeating: 0, count: 4)
+                for c in 0..<4 {
+                    healed[c] = (source[col, row, c] + correction[c]).clamped(to: 0...255)
+                }
+                let alpha = dest[col, row, 3] + (healed[3] - dest[col, row, 3]) * weight
+                for c in 0..<3 {
+                    let straight = dest[col, row, c] + (healed[c] - dest[col, row, c]) * weight
+                    // Back to premultiplied, in the buffer's BGRA order.
+                    let premultiplied = (straight * alpha / 255).clamped(to: 0...255)
+                    d[o + (2 - c)] = UInt8(premultiplied.rounded())
+                }
+                d[o + 3] = UInt8(alpha.clamped(to: 0...255).rounded())
+            }
+        }
+        return true
+    }
+
+    /// Where a spot heal should take its texture from: whichever nearby patch
+    /// of the same size varies least, so the dab borrows clean pixels rather
+    /// than whatever blemish sits next door.
+    static func bestHealSource(layer: Layer, at center: CGPoint, diameter: CGFloat) -> CGSize? {
+        let reach = max(2, diameter * 1.4)
+        var best: (offset: CGSize, score: Float)?
+        for step in 0..<8 {
+            let angle = CGFloat(step) * .pi / 4
+            let offset = CGSize(width: (cos(angle) * reach).rounded(),
+                                height: (sin(angle) * reach).rounded())
+            let radius = max(1, Int((diameter / 2).rounded()))
+            let outer = radius + max(2, radius / 3)
+            let side = outer * 2 + 1
+            let rect = CGRect(x: Int(center.x.rounded()) - outer + Int(offset.width),
+                              y: Int(center.y.rounded()) - outer + Int(offset.height),
+                              width: side, height: side)
+            guard let patch = readPatch(layer, rect: rect) else { continue }
+            let score = variance(patch)
+            if best == nil || score < best!.score { best = (offset, score) }
+        }
+        return best?.offset
     }
 }

@@ -310,6 +310,142 @@ do {
     check(Int(fillPixel?.b ?? 255) < 40, "pixels landed where the shape was")
 }
 
+section("scroll wheel adjusts the tool")
+do {
+    let settings = ToolSettings()
+
+    settings.tool = .paintbrush
+    settings.brushWidth = 10
+    equal(settings.adjustable(secondary: false), ToolSettings.Adjustable.size, "brush scrolls its size")
+    settings.adjust(.size, steps: 4)
+    equal(settings.brushWidth, 14, "four notches up, four pixels wider")
+    settings.adjust(.size, steps: -100)
+    equal(settings.brushWidth, 1, "and it stops at one pixel")
+
+    equal(settings.adjustable(secondary: true), ToolSettings.Adjustable.hardness,
+          "shift reaches the brush's second dial")
+
+    settings.tool = .paintBucket
+    settings.tolerance = 0.3
+    equal(settings.adjustable(secondary: false), ToolSettings.Adjustable.tolerance,
+          "the bucket scrolls tolerance")
+    check(settings.adjustable(secondary: true) == nil, "and has nothing on shift")
+    settings.adjust(.tolerance, steps: 5)
+    near(settings.tolerance, 0.35, 0.001, "five notches is five percent")
+    settings.adjust(.tolerance, steps: 500)
+    equal(settings.tolerance, 1, "tolerance tops out at 100%")
+
+    settings.tool = .gradient
+    equal(settings.adjustable(secondary: false), ToolSettings.Adjustable.strength,
+          "the gradient scrolls its strength")
+    settings.adjust(.strength, steps: -10)
+    near(settings.gradientStrength, 0.5, 0.001, "ten notches down is half strength")
+
+    settings.tool = .magicWand
+    equal(settings.adjustable(secondary: false), ToolSettings.Adjustable.tolerance,
+          "the wand shares the bucket's dial")
+    settings.tool = .pan
+    check(settings.adjustable(secondary: false) == nil, "tools without a dial ignore the wheel")
+
+    // The readout the status bar shows.
+    settings.tool = .paintbrush
+    settings.brushWidth = 7
+    equal(settings.adjust(.size, steps: 1), "Size 8", "the change is reported back")
+}
+
+section("gradient strength")
+do {
+    let doc = Document(width: 20, height: 20, background: nil)
+    let settings = ToolSettings()
+    settings.tool = .gradient
+    settings.gradientStrength = 0.5
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.primaryColor = .white
+    engine.secondaryColor = .white
+
+    engine.mouseDown(at: CGPoint(x: 0, y: 10), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 19, y: 10), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 19, y: 10), modifiers: [])
+
+    let a = pixel(doc, 10, 10)?.a ?? 0
+    check(a > 100 && a < 160, "half strength lands half-opaque, got \(a)")
+}
+
+section("gradient drag shows its direction")
+do {
+    let doc = Document(width: 40, height: 40, background: nil)
+    let settings = ToolSettings()
+    settings.tool = .gradient
+    let engine = ToolEngine(doc: doc, settings: settings)
+    engine.primaryColor = .white
+    engine.secondaryColor = .black
+
+    engine.mouseDown(at: CGPoint(x: 5, y: 5), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 30, y: 20), modifiers: [])
+
+    let preview = engine.previewPath ?? CGMutablePath()
+    check(engine.previewPath != nil, "the drag previews something")
+    equal(engine.previewStyle, ToolEngine.PreviewStyle.guide, "a gradient previews a guide, not a shape")
+    equal(preview.linePoints.count, 2, "the guide is a two-point line")
+    equal(preview.linePoints.first ?? .zero, CGPoint(x: 5, y: 5), "running from where the drag started")
+    equal(preview.linePoints.last ?? .zero, CGPoint(x: 30, y: 20), "to where the pointer is")
+    check(preview.boundingBoxOfPath.width > 0 && preview.boundingBoxOfPath.height > 0,
+          "and it is not collapsed")
+
+    engine.mouseUp(at: CGPoint(x: 30, y: 20), modifiers: [])
+    check(engine.previewPath == nil, "the guide goes away once the gradient is drawn")
+    equal(doc.history.currentTitle, "Gradient", "and the gradient is what landed")
+}
+
+section("shapes mirror when a drag crosses over")
+do {
+    let doc = Document(width: 100, height: 100)
+    let settings = ToolSettings()
+    settings.tool = .shapes
+    settings.shape = .triangle          // asymmetric, so a flip is visible
+    settings.drawMode = .fill
+    let engine = ToolEngine(doc: doc, settings: settings)
+
+    // Draw upwards: apex at the top.
+    engine.mouseDown(at: CGPoint(x: 20, y: 20), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: 60, y: 60), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 60, y: 60), modifiers: [])
+    check(!(engine.session?.flipY ?? true), "dragging up leaves the shape upright")
+
+    // Drag the top edge down past the bottom: the triangle turns over instead
+    // of sliding down the canvas.
+    let box = engine.session!.rect
+    engine.mouseDown(at: CGPoint(x: box.midX, y: box.maxY), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: box.midX, y: box.minY - 30), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: box.midX, y: box.minY - 30), modifiers: [])
+
+    let flipped = engine.session!
+    check(flipped.flipY, "crossing the bottom edge mirrors it")
+    check(!flipped.flipX, "and leaves the other axis alone")
+    near(flipped.rect.maxY, box.minY, 1, "the box now hangs below where it was")
+    near(flipped.rect.width, box.width, 1, "with its width untouched")
+
+    // Dragging back over restores the original orientation, once, not per event.
+    engine.mouseDown(at: CGPoint(x: box.midX, y: flipped.rect.minY), rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: box.midX, y: box.minY - 10), modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: box.midX, y: box.maxY), modifiers: [])
+    engine.mouseUp(at: CGPoint(x: box.midX, y: box.maxY), modifiers: [])
+    check(!(engine.session?.flipY ?? true), "dragging back the other way flips it upright again")
+
+    // The mirrored path is what gets drawn, not just a flag.
+    var down = ToolEngine.ShapeSession(kind: .triangle, p0: CGPoint(x: 0, y: 0), p1: CGPoint(x: 10, y: 10))
+    down.flipY = true
+    let upright = ToolEngine.ShapeSession(kind: .triangle, p0: CGPoint(x: 0, y: 0), p1: CGPoint(x: 10, y: 10))
+    let apexUp = engine.sessionPath(upright).boundingBoxOfPath
+    let apexDown = engine.sessionPath(down).boundingBoxOfPath
+    near(apexUp.height, apexDown.height, 0.01, "mirroring keeps the same bounds")
+    let up = engine.sessionPath(upright), over = engine.sessionPath(down)
+    check(up.contains(CGPoint(x: 1, y: 1)), "upright, the base fills the bottom corners")
+    check(!up.contains(CGPoint(x: 1, y: 9)), "and the top corners are outside it")
+    check(over.contains(CGPoint(x: 1, y: 9)), "mirrored, the base is at the top")
+    check(!over.contains(CGPoint(x: 1, y: 1)), "and the bottom corners are outside")
+}
+
 section("shape session cancel")
 do {
     let doc = Document(width: 60, height: 60)
@@ -848,6 +984,62 @@ do {
     check(pairPath.contains(CGPoint(x: 3, y: 3), using: .evenOdd), "the first blob is inside")
     check(pairPath.contains(CGPoint(x: 16, y: 16), using: .evenOdd), "so is the second")
     check(!pairPath.contains(CGPoint(x: 10, y: 10), using: .evenOdd), "the gap between them is not")
+}
+
+section("brush tip tools")
+do {
+    check(ToolID.paintbrush.hasBrushTip, "the paintbrush shows its radius")
+    check(ToolID.eraser.hasBrushTip, "so does the eraser")
+    check(ToolID.cloneStamp.hasBrushTip, "and the clone stamp")
+    check(ToolID.recolor.hasBrushTip, "and recolor")
+    check(!ToolID.pencil.hasBrushTip, "the pencil is one pixel, so no ring")
+    check(!ToolID.rectangleSelect.hasBrushTip, "and the selection tools have none")
+    check(!ToolID.paintBucket.hasBrushTip, "nor the bucket")
+}
+
+section("tolerance is per channel")
+do {
+    // Two colors that differ by 60 on one channel only. At 10% (25 per
+    // channel) the fill must stop at the boundary; summing the channels used
+    // to let far bigger differences through.
+    let doc = Document(width: 8, height: 4, background: nil)
+    let l = doc.selectedLayer!
+    l.context.setFillColor(NSColor(srgbRed: 0.4, green: 0.4, blue: 0.4, alpha: 1).cgColor)
+    l.context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+    l.context.setFillColor(NSColor(srgbRed: 0.4, green: 0.4, blue: 0.4 + 60.0 / 255, alpha: 1).cgColor)
+    l.context.fill(CGRect(x: 4, y: 0, width: 4, height: 4))
+
+    func spread(_ tolerance: CGFloat) -> Int {
+        guard let mask = PixelOps.mask(in: l, seedX: 1, seedY: 1,
+                                       tolerance: tolerance, contiguous: true) else { return 0 }
+        return mask.filter { $0 }.count
+    }
+
+    equal(spread(0.1), 16, "10% keeps the fill inside the color it started on")
+    equal(spread(0.5), 16, "so does half way up the slider")
+    equal(spread(0.7), 32, "70% reaches across a 60/255 step")
+    equal(spread(1.0), 32, "and the top of the slider takes everything")
+
+    // Three channels each off by 40: still one step of 40, not a sum of 120.
+    let mixed = Document(width: 4, height: 2, background: nil)
+    let m = mixed.selectedLayer!
+    m.context.setFillColor(NSColor(srgbRed: 0.5, green: 0.5, blue: 0.5, alpha: 1).cgColor)
+    m.context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+    let off = CGFloat(40) / 255
+    m.context.setFillColor(NSColor(srgbRed: 0.5 + off, green: 0.5 + off, blue: 0.5 + off, alpha: 1).cgColor)
+    m.context.fill(CGRect(x: 2, y: 0, width: 2, height: 2))
+    let wide = PixelOps.mask(in: m, seedX: 0, seedY: 0, tolerance: 0.6, contiguous: true)?
+        .filter { $0 }.count ?? 0
+    equal(wide, 8, "60% covers a 40-per-channel step on every channel at once")
+    let narrow = PixelOps.mask(in: m, seedX: 0, seedY: 0, tolerance: 0.4, contiguous: true)?
+        .filter { $0 }.count ?? 0
+    equal(narrow, 4, "40% still treats it as a different color")
+
+    // The curve is what keeps the middle of the slider usable.
+    equal(PixelOps.channelLimit(for: 0), 0, "zero tolerance matches only the exact color")
+    equal(PixelOps.channelLimit(for: 1), 255, "the top matches anything")
+    check(PixelOps.channelLimit(for: 0.5) < 64, "half way up stays selective")
+    check(PixelOps.channelLimit(for: 0.7) < 128, "70% is still short of half the range")
 }
 
 section("wand and bucket land on the right rows")
@@ -1499,6 +1691,235 @@ do {
     check((pixel(doc, 18, 18)?.a ?? 0) > 200, "with the pixels the crop threw away")
 }
 
+windowSection("the layers palette folds a group away") {
+    let doc = Document(width: 8, height: 8, background: nil)
+    doc.addLayer(named: "B")
+    doc.drop(subtreeAt: 1, onto: 0)
+    let panel = LayersPanel()
+    panel.attach(doc)
+    equal(panel.visibleRows.count, 3, "every entry shows while the group is open")
+    equal(panel.visibleRows.first, 2, "top-most first")
+
+    doc.layers[2].isCollapsed = true
+    panel.reload()
+    equal(panel.visibleRows, [2], "collapsing hides the members")
+
+    doc.layers[2].isCollapsed = false
+    panel.reload()
+    equal(panel.visibleRows.count, 3, "expanding brings them back")
+}
+
+section("healing brush")
+do {
+    // A light half and a dark half, with a black blemish in the dark one.
+    let doc = Document(width: 48, height: 24, background: nil)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    layer.fill(with: NSColor(white: 0.30, alpha: 1))
+    layer.context.setFillColor(NSColor(white: 0.80, alpha: 1).cgColor)
+    layer.context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+    layer.context.setFillColor(NSColor.black.cgColor)
+    layer.context.fillEllipse(in: CGRect(x: 33, y: 9, width: 6, height: 6))
+    check((PixelOps.sample(layer, x: 36, y: 12)?.r ?? 255) < 20, "the blemish is there to start")
+
+    // Healing from the light half must not drag the light tone across: the
+    // texture comes from the source, the tone from where the dab lands.
+    let healed = PixelOps.heal(layer: layer, at: CGPoint(x: 36, y: 12), diameter: 8,
+                               offset: CGSize(width: -24, height: 0), hardness: 0.8)
+    check(healed, "the dab lands inside the canvas")
+    let after = PixelOps.sample(layer, x: 36, y: 12)?.r ?? 0
+    check(after > 30, "the blemish is gone")
+    check(after < 150, "and the light source tone did not come with it")
+
+    // A dab in the corner still works: the edge pixels stand in for what
+    // hangs over the side.
+    check(PixelOps.heal(layer: layer, at: CGPoint(x: 1, y: 1), diameter: 20,
+                        offset: CGSize(width: 6, height: 6), hardness: 1),
+          "a dab in the corner still heals")
+    check(PixelOps.sample(layer, x: 1, y: 1) != nil, "and leaves the corner readable")
+    check(!PixelOps.heal(layer: layer, at: CGPoint(x: -100, y: -100), diameter: 8,
+                         offset: .zero, hardness: 1),
+          "a dab right off the canvas does nothing")
+}
+
+section("spot healing picks its own source")
+do {
+    let doc = Document(width: 40, height: 40, background: nil)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    layer.fill(with: NSColor(white: 0.55, alpha: 1))
+    // A busy corner and a calm one: the calm patch is the better source.
+    layer.context.setFillColor(NSColor.red.cgColor)
+    for i in 0..<10 {
+        layer.context.fill(CGRect(x: CGFloat(i) * 2, y: 0, width: 1, height: 40))
+    }
+    layer.context.setFillColor(NSColor.black.cgColor)
+    layer.context.fillEllipse(in: CGRect(x: 26, y: 18, width: 6, height: 6))
+
+    let offset = PixelOps.bestHealSource(layer: layer, at: CGPoint(x: 29, y: 21), diameter: 8)
+    check(offset != nil, "spot healing finds somewhere to sample")
+    if let offset {
+        check(offset.width >= 0, "and steers away from the striped side")
+        PixelOps.heal(layer: layer, at: CGPoint(x: 29, y: 21), diameter: 8,
+                      offset: offset, hardness: 0.8)
+        let after = PixelOps.sample(layer, x: 29, y: 21)?.r ?? 0
+        check(after > 100, "the spot is healed back towards the surrounding tone")
+    }
+}
+
+section("healing keeps the layer clean")
+do {
+    let doc = Document(width: 20, height: 20, background: nil)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    layer.fill(with: NSColor(white: 0.5, alpha: 1))
+    PixelOps.heal(layer: layer, at: CGPoint(x: 10, y: 10), diameter: 6,
+                  offset: CGSize(width: 4, height: 0), hardness: 1)
+    check(layer.context.ctm == Layer.makeContext(width: 20, height: 20).ctm,
+          "healing leaves no transform behind")
+    check(layer.context.interpolationQuality == .high,
+          "and no resampling setting behind")
+}
+
+section("layer groups")
+do {
+    // Bottom to top: Background, Middle, Top.
+    let doc = Document(width: 8, height: 8, background: nil)
+    doc.selectedLayer?.fill(with: .red)
+    doc.addLayer(named: "Middle")
+    doc.selectedLayer?.fill(with: .green)
+    doc.addLayer(named: "Top")
+    equal(doc.layers.count, 3, "three layers to start")
+
+    // Dropping Top onto Middle wraps the pair in a group.
+    doc.drop(subtreeAt: 2, onto: 1)
+    equal(doc.layers.count, 4, "the group header joins the stack")
+    check(doc.layers[3].isGroup, "and sits above its members")
+    equal(doc.layers[3].depth, 0, "the group is top level")
+    equal(doc.layers[1].name, "Middle", "the host stays below")
+    equal(doc.layers[1].depth, 1, "nested inside the group")
+    equal(doc.layers[2].name, "Top", "the dragged layer lands above it")
+    equal(doc.layers[2].depth, 1, "nested too")
+    equal(doc.childRange(ofGroupAt: 3), 1..<3, "the group knows its members")
+    equal(doc.parentGroup(of: 1), 3, "and a member knows its group")
+
+    // A group hides what it holds.
+    doc.layers[3].isVisible = false
+    check((pixel(doc, 4, 4)?.g ?? 255) < 40, "hiding the group hides its members")
+    doc.layers[3].isVisible = true
+    check((pixel(doc, 4, 4)?.g ?? 0) > 200, "showing it brings them back")
+
+    // Opacity applies to the group as a whole, not to each member in turn.
+    doc.layers[3].opacity = 0.5
+    let blended = pixel(doc, 4, 4)
+    check((blended?.r ?? 0) > 90 && (blended?.g ?? 0) > 90, "group opacity blends the pair over the red below")
+    doc.layers[3].opacity = 1
+
+    // Grouping is undoable like any other edit.
+    equal(doc.history.currentTitle, "Group Layers", "grouping lands in history")
+    doc.undo()
+    equal(doc.layers.count, 3, "undo dissolves the group")
+    check(doc.layers.allSatisfy { $0.depth == 0 }, "and flattens the nesting back")
+    doc.redo()
+    equal(doc.layers.count, 4, "redo brings it back")
+
+    // Dragging a layer out of a group renests it at the top level.
+    doc.moveSubtree(from: 2, to: 4, depth: 0)
+    equal(doc.layers.count, 4, "nothing is lost moving out")
+    equal(doc.layers[3].name, "Top", "the layer sits above the group")
+    equal(doc.layers[3].depth, 0, "back at the top level")
+    check(doc.layers[2].isGroup, "with the group beneath it")
+    equal(doc.childRange(ofGroupAt: 2), 1..<2, "holding one member now")
+
+    // Ungrouping leaves the members where they were.
+    doc.ungroup(at: 2)
+    equal(doc.layers.count, 3, "the header goes")
+    check(doc.layers.allSatisfy { !$0.isGroup }, "no group left")
+    check(doc.layers.allSatisfy { $0.depth == 0 }, "and nothing stays indented")
+}
+
+section("group operations")
+do {
+    let doc = Document(width: 8, height: 8, background: nil)
+    doc.selectedLayer?.fill(with: .red)
+    doc.addLayer(named: "Paint")
+    doc.selectedLayer?.fill(with: .blue)
+    doc.groupSelected()
+    check(doc.layers[2].isGroup, "grouping the selection makes a folder")
+    equal(doc.selectedLayerIndex, 2, "and selects it")
+
+    // Adding a layer while a group is selected puts it inside.
+    doc.addLayer(named: "Inside")
+    equal(doc.layers[doc.selectedLayerIndex].name, "Inside", "the new layer is selected")
+    equal(doc.layers[doc.selectedLayerIndex].depth, 1, "and lands inside the group")
+    equal(doc.parentGroup(of: doc.selectedLayerIndex), 3, "under the same header")
+
+    // Duplicating a group copies its contents too.
+    doc.selectedLayerIndex = 3
+    doc.duplicateSelectedLayer()
+    equal(doc.layers.count, 7, "header and both members are copied")
+    check(doc.layers[6].isGroup, "the copy is a group")
+    equal(doc.childRange(ofGroupAt: 6).count, 2, "with the same two members")
+
+    // Merging a group bakes it down to one raster layer.
+    doc.selectedLayerIndex = 6
+    doc.mergeLayerDown()
+    equal(doc.layers.count, 5, "the group collapses into a layer")
+    check(!doc.layers[4].isGroup, "which holds pixels")
+    equal(doc.history.currentTitle, "Merge Group", "and says so in history")
+    check((pixel(doc, 4, 4)?.b ?? 0) > 200, "keeping what the group drew")
+
+    // Deleting a group takes its members with it.
+    doc.selectedLayerIndex = 3
+    let before = doc.layers.count
+    doc.deleteSelectedLayer()
+    equal(doc.layers.count, before - 3, "header and members go together")
+}
+
+section("groups survive a round trip")
+do {
+    let doc = Document(width: 6, height: 6, background: nil)
+    doc.selectedLayer?.fill(with: .red)
+    doc.addLayer(named: "Nested")
+    doc.selectedLayer?.fill(with: .green)
+    doc.drop(subtreeAt: 1, onto: 0)
+    doc.layers[2].name = "Folder"
+    doc.layers[2].opacity = 0.5
+    doc.layers[2].isCollapsed = true
+
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("group-roundtrip.sketchy")
+    defer { try? FileManager.default.removeItem(at: url) }
+    do {
+        try doc.writeNative(to: url)
+        let read = try Document.openNative(url: url)
+        equal(read.layers.count, 3, "every entry comes back")
+        check(read.layers[2].isGroup, "the group is still a group")
+        equal(read.layers[2].name, "Folder", "with its name")
+        near(read.layers[2].opacity, 0.5, 0.01, "and its opacity")
+        check(read.layers[2].isCollapsed, "and stays folded")
+        equal(read.layers[0].depth, 1, "members keep their nesting")
+        equal(read.layers[1].depth, 1, "both of them")
+    } catch {
+        check(false, "saving a grouped document failed: \(error)")
+    }
+}
+
+section("moving a layer within its group")
+do {
+    let doc = Document(width: 4, height: 4, background: nil)
+    doc.addLayer(named: "B")
+    doc.addLayer(named: "C")
+    doc.drop(subtreeAt: 2, onto: 1)          // group B and C
+    // Stack is now: A, B, C, [Group]
+    doc.selectedLayerIndex = 1               // B, the lower member
+    doc.moveSelected(up: true)
+    equal(doc.layers[2].name, "B", "the member moves up inside its group")
+    equal(doc.layers[2].depth, 1, "and stays nested")
+    check(doc.layers[3].isGroup, "the header stays on top")
+
+    doc.selectedLayerIndex = 2               // B again, now the top member
+    doc.moveSelected(up: true)
+    equal(doc.layers[2].name, "B", "it will not climb out of its group")
+}
+
 section("image size anchor")
 do {
     // A wide image resized into a square box keeps its shape when fitting.
@@ -1606,6 +2027,28 @@ do {
 }
 
 // MARK: - Color entry
+
+section("color wheel at zero brightness")
+do {
+    let wheel = ColorWheelView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+    wheel.selection = .black
+    wheel.brightness = 0
+
+    // Halfway out to the right rim: hue 0, saturation 0.5.
+    wheel.pick(at: CGPoint(x: 75, y: 50))
+    let picked = wheel.selection.usingColorSpace(.deviceRGB)!
+    check(picked.brightnessComponent > 0.9, "picking off a black wheel gives a visible color")
+    check(wheel.brightness > 0.9, "and lifts the wheel's own value with it")
+    equal(Int((picked.hueComponent * 360).rounded()) % 360, 0, "the hue is the one under the cursor")
+    check(abs(wheel.saturation - 0.5) < 0.02, "as is the saturation")
+
+    // The marker tracks the drag even when the color it makes has no hue.
+    wheel.pick(at: CGPoint(x: 50, y: 85))
+    check(abs(wheel.hue - 0.25) < 0.02, "dragging to the top moves the marker to a quarter turn")
+    wheel.selection = .black
+    check(abs(wheel.hue - 0.25) < 0.02, "and a black selection does not drag it back to the middle")
+    check(wheel.saturation > 0.5, "the marker keeps its distance from the center too")
+}
 
 section("hex parsing and formatting")
 do {

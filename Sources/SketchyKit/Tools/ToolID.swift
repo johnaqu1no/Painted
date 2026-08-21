@@ -9,6 +9,7 @@ enum ToolID: String, CaseIterable {
     case paintbrush, eraser
     case pencil, colorPicker
     case cloneStamp, recolor
+    case healingBrush, spotHealing
     case text, line
     case shapes
 
@@ -29,10 +30,23 @@ enum ToolID: String, CaseIterable {
         case .pencil:             return "Pencil"
         case .colorPicker:        return "Color Picker"
         case .cloneStamp:         return "Clone Stamp"
+        case .healingBrush:       return "Healing Brush"
+        case .spotHealing:        return "Spot Healing Brush"
         case .recolor:            return "Recolor"
         case .text:               return "Text"
         case .line:               return "Line / Curve"
         case .shapes:             return "Shapes"
+        }
+    }
+
+    /// Tools that paint with a round tip sized by the brush width, and so get
+    /// a ring under the pointer showing what they are about to cover.
+    var hasBrushTip: Bool {
+        switch self {
+        case .paintbrush, .eraser, .cloneStamp, .recolor,
+             .healingBrush, .spotHealing:
+            return true
+        default: return false
         }
     }
 
@@ -54,6 +68,8 @@ enum ToolID: String, CaseIterable {
         case .pencil:             return "pencil"
         case .colorPicker:        return "eyedropper"
         case .cloneStamp:         return "doc.on.doc"
+        case .healingBrush:       return "bandage"
+        case .spotHealing:        return "bandage.fill"
         case .recolor:            return "circle.lefthalf.filled"
         case .text:               return "textformat"
         case .line:               return "line.diagonal"
@@ -78,6 +94,8 @@ enum ToolID: String, CaseIterable {
         case .pencil:             return "p"
         case .colorPicker:        return "k"
         case .cloneStamp:         return "l"
+        case .healingBrush:       return "j"
+        case .spotHealing:        return "j"
         case .recolor:            return "r"
         case .text:               return "t"
         case .line:               return "o"
@@ -102,6 +120,7 @@ enum ToolID: String, CaseIterable {
         .paintbrush, .eraser,
         .pencil, .colorPicker,
         .cloneStamp, .recolor,
+        .healingBrush, .spotHealing,
         .text, .line,
         .shapes
     ]
@@ -222,6 +241,8 @@ final class ToolSettings {
     var strokeStyle: StrokeStyle = .solid
     var fillStyle: FillStyle = .solidColor
     var gradientKind: GradientKind = .linear
+    /// How opaque a gradient lands, so it can be layered over what is there.
+    var gradientStrength: CGFloat = 1
     var selectionMode: SelectionMode = .replace
     var blendMode: LayerBlendMode = .normal
     var antialiasing: Bool = true
@@ -233,4 +254,54 @@ final class ToolSettings {
     /// hard edges unless the user asks for smoothing.
     var resampling: Resampling = .pixels
     var fillGlobally: Bool = false
+
+    /// What a scroll over the canvas changes for the current tool. The first
+    /// option is the one the tool is mostly about; the second is for the
+    /// tools that have a second dial worth reaching quickly.
+    enum Adjustable {
+        case size, hardness, tolerance, strength, fontSize
+    }
+
+    func adjustable(secondary: Bool) -> Adjustable? {
+        switch tool {
+        case .paintbrush:                 return secondary ? .hardness : .size
+        case .eraser, .cloneStamp:        return secondary ? nil : .size
+        case .healingBrush, .spotHealing: return secondary ? .hardness : .size
+        case .recolor:                    return secondary ? .tolerance : .size
+        case .paintBucket, .magicWand:    return secondary ? nil : .tolerance
+        case .gradient:                   return secondary ? nil : .strength
+        case .text:                       return secondary ? nil : .fontSize
+        case .shapes, .line:              return secondary ? nil : .size
+        default:                          return nil
+        }
+    }
+
+    /// Nudges one option and reports it for the status bar. `steps` is whole
+    /// wheel notches, positive for up.
+    @discardableResult
+    func adjust(_ option: Adjustable, steps: CGFloat) -> String {
+        switch option {
+        case .size:
+            brushWidth = (brushWidth + steps).clamped(to: 1...200).rounded()
+            return "Size \(Int(brushWidth))"
+        case .hardness:
+            hardness = (hardness + steps / 20).clamped(to: 0...1)
+            return "Hardness \(Int(hardness * 100))%"
+        case .tolerance:
+            tolerance = (tolerance + steps / 100).clamped(to: 0...1)
+            return "Tolerance \(Int(tolerance * 100))%"
+        case .strength:
+            gradientStrength = (gradientStrength + steps / 20).clamped(to: 0...1)
+            return "Strength \(Int(gradientStrength * 100))%"
+        case .fontSize:
+            fontSize = (fontSize + steps).clamped(to: 4...400).rounded()
+            return "Font Size \(Int(fontSize))"
+        }
+    }
+}
+
+extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
+    }
 }

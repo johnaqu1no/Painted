@@ -10,8 +10,13 @@ final class ToolEngine {
     var secondaryColor: NSColor = .white
 
     /// Live overlay the canvas renders on top of the composited image.
+    /// How the in-progress preview is drawn: like the shape it will become,
+    /// like a selection outline, or as a guide that is never rasterized.
+    enum PreviewStyle { case shape, selection, guide }
+
     private(set) var previewPath: CGPath?
-    private(set) var previewIsSelection = false
+    private(set) var previewStyle: PreviewStyle = .shape
+    var previewIsSelection: Bool { previewStyle == .selection }
 
     /// Scratch buffer holding the current paintbrush stroke as an alpha mask, so
     /// overlapping dabs don't darken each other mid-stroke.
@@ -81,6 +86,11 @@ final class ToolEngine {
         var p0: CGPoint
         var p1: CGPoint
         var angle: CGFloat = 0
+        /// A drag that crosses the opposite edge mirrors the shape rather than
+        /// pushing it along: p0/p1 always hold a positive rect, so the flip has
+        /// to be remembered separately.
+        var flipX = false
+        var flipY = false
 
         var isLine: Bool { kind == nil }
         var rect: CGRect {
@@ -106,6 +116,10 @@ final class ToolEngine {
     private var lassoPoints: [CGPoint] = []
     private var cloneSource: CGPoint?
     private var cloneDelta: CGSize?
+    /// Anchor for the healing brush, kept apart from the clone stamp's so
+    /// switching tools does not move either of them.
+    private var healSource: CGPoint?
+    private var healDelta: CGSize?
     private var isDragging = false
     private var usesSecondary = false
     private var startedSelection: CGPath?
@@ -139,7 +153,7 @@ final class ToolEngine {
         isDragging = true
         startedSelection = doc.selectionPath
         previewPath = nil
-        previewIsSelection = false
+        previewStyle = .shape
 
         switch settings.tool {
         case .paintbrush, .pencil, .eraser:
@@ -159,6 +173,21 @@ final class ToolEngine {
                 onStatus?("⌥-click to set the clone source first")
                 isDragging = false
             }
+        case .healingBrush:
+            if modifiers.contains(.option) || modifiers.contains(.command) {
+                healSource = p
+                healDelta = nil
+                onStatus?("Heal source set")
+                isDragging = false
+            } else if let src = healSource {
+                if healDelta == nil { healDelta = CGSize(width: p.x - src.x, height: p.y - src.y) }
+                healDab(from: p, to: p)
+            } else {
+                onStatus?("⌥-click to set the heal source first")
+                isDragging = false
+            }
+        case .spotHealing:
+            healDab(from: p, to: p)
         case .paintBucket:
             guard let layer = doc.selectedLayer else { break }
             PixelOps.floodFill(layer: layer,
@@ -232,16 +261,20 @@ final class ToolEngine {
                 }
                 s.p1 = end
             } else {
-                let r = constrained(s.p0, p, modifiers: modifiers)
+                let anchor = grabPoint
+                let r = constrained(anchor, p, modifiers: modifiers)
                 s.p0 = CGPoint(x: r.minX, y: r.minY)
                 s.p1 = CGPoint(x: r.maxX, y: r.maxY)
+                s.flipX = p.x < anchor.x
+                s.flipY = p.y < anchor.y
             }
         case .moving:
             let dx = p.x - grabPoint.x, dy = p.y - grabPoint.y
             s.p0 = CGPoint(x: start.p0.x + dx, y: start.p0.y + dy)
             s.p1 = CGPoint(x: start.p1.x + dx, y: start.p1.y + dy)
         case .resizing(let handle):
-            resize(&s, handle: handle, to: p, constrain: modifiers.contains(.shift))
+            resize(&s, from: start, handle: handle, to: p,
+                   constrain: modifiers.contains(.shift))
         case .rotating:
             let c = start.center
             let a0 = atan2(grabPoint.y - c.y, grabPoint.x - c.x)
@@ -269,19 +302,25 @@ final class ToolEngine {
             recolorDab(at: p)
         case .cloneStamp:
             cloneDab(at: p)
+        case .healingBrush, .spotHealing:
+            healDab(from: lastPoint, to: p)
         case .lassoSelect:
             lassoPoints.append(p)
             previewPath = lassoPath(closed: false)
-            previewIsSelection = true
+            previewStyle = .selection
         case .rectangleSelect, .ellipseSelect:
             previewPath = selectionShapePath(to: p, modifiers: modifiers)
-            previewIsSelection = true
+            previewStyle = .selection
         case .line, .shapes:
             updateShapeInteraction(to: p, modifiers: modifiers)
         case .gradient:
-            previewPath = CGPath(rect: CGRect(x: min(dragStart.x, p.x), y: min(dragStart.y, p.y),
-                                              width: abs(p.x - dragStart.x), height: abs(p.y - dragStart.y)),
-                                 transform: nil)
+            // A gradient has no outline to preview, only a direction, so the
+            // drag shows the axis it is being pulled along.
+            let guideLine = CGMutablePath()
+            guideLine.move(to: dragStart)
+            guideLine.addLine(to: p)
+            previewPath = guideLine.copy()
+            previewStyle = .guide
         case .moveSelection:
             dragSelection(to: p, modifiers: modifiers)
         case .moveSelectedPixels:
@@ -295,7 +334,7 @@ final class ToolEngine {
         defer {
             isDragging = false
             previewPath = nil
-            previewIsSelection = false
+            previewStyle = .shape
             onNeedsDisplay?()
         }
         guard isDragging else {
@@ -311,6 +350,8 @@ final class ToolEngine {
         case .eraser:      doc.commit("Eraser")
         case .recolor:     doc.commit("Recolor")
         case .cloneStamp:  doc.commit("Clone Stamp")
+        case .healingBrush: doc.commit("Healing Brush")
+        case .spotHealing:  doc.commit("Spot Healing")
         case .paintBucket:
             doc.commit(pendingCommitTitle ?? "Paint Bucket")
             pendingCommitTitle = nil
@@ -368,7 +409,16 @@ final class ToolEngine {
         var t = transform(for: s)
         let base: CGPath
         if let kind = s.kind {
-            base = ShapeFactory.path(for: kind, in: s.rect)
+            let box = s.rect
+            let shape = ShapeFactory.path(for: kind, in: box)
+            if s.flipX || s.flipY {
+                var mirror = CGAffineTransform(translationX: box.midX, y: box.midY)
+                    .scaledBy(x: s.flipX ? -1 : 1, y: s.flipY ? -1 : 1)
+                    .translatedBy(x: -box.midX, y: -box.midY)
+                base = shape.copy(using: &mirror) ?? shape
+            } else {
+                base = shape
+            }
         } else {
             let line = CGMutablePath()
             line.move(to: s.p0)
@@ -421,18 +471,22 @@ final class ToolEngine {
         return s.rect.contains(local)
     }
 
-    private func resize(_ s: inout ShapeSession, handle: Int, to p: CGPoint, constrain: Bool) {
+    /// Every drag event is measured against the shape as it was when the
+    /// handle was grabbed, so dragging past an edge and back mirrors once
+    /// rather than flapping between the two.
+    private func resize(_ s: inout ShapeSession, from start: ShapeSession,
+                        handle: Int, to p: CGPoint, constrain: Bool) {
         if s.isLine {
             if handle == 0 { s.p0 = p } else { s.p1 = p }
             return
         }
         // Work in the session's own (un-rotated) space.
-        let c = s.center
+        let c = start.center
         let dx = p.x - c.x, dy = p.y - c.y
-        let cosA = cos(-s.angle), sinA = sin(-s.angle)
+        let cosA = cos(-start.angle), sinA = sin(-start.angle)
         let local = CGPoint(x: c.x + dx * cosA - dy * sinA, y: c.y + dx * sinA + dy * cosA)
 
-        var r = s.rect
+        var r = start.rect
         switch handle {
         case 0: r = CGRect(x: local.x, y: local.y, width: r.maxX - local.x, height: r.maxY - local.y)
         case 1: r = CGRect(x: r.minX, y: local.y, width: r.width, height: r.maxY - local.y)
@@ -443,12 +497,19 @@ final class ToolEngine {
         case 6: r = CGRect(x: local.x, y: r.minY, width: r.maxX - local.x, height: local.y - r.minY)
         default: r = CGRect(x: local.x, y: r.minY, width: r.maxX - local.x, height: r.height)
         }
-        if constrain, r.width > 0, r.height > 0 {
-            let side = max(abs(r.width), abs(r.height))
-            r.size = CGSize(width: side, height: side)
+        // CGRect.width is always positive; only size keeps the sign, and the
+        // sign is the whole question of whether the drag crossed over.
+        let signed = r.size
+        if constrain, signed.width != 0, signed.height != 0 {
+            let side = max(abs(signed.width), abs(signed.height))
+            r.size = CGSize(width: signed.width < 0 ? -side : side,
+                            height: signed.height < 0 ? -side : side)
         }
+        s.flipX = start.flipX != (signed.width < 0)
+        s.flipY = start.flipY != (signed.height < 0)
+        r = r.standardized
         s.p0 = CGPoint(x: r.minX, y: r.minY)
-        s.p1 = CGPoint(x: r.minX + abs(r.width), y: r.minY + abs(r.height))
+        s.p1 = CGPoint(x: r.maxX, y: r.maxY)
     }
 
     /// Rasterizes the pending shape onto the layer.
@@ -741,6 +802,30 @@ final class ToolEngine {
         ctx.restoreGState()
     }
 
+    /// Heals along a segment. The healing brush takes its texture from the
+    /// anchor the user set; spot healing finds the calmest patch nearby for
+    /// each dab, so a blemish can be wiped out without picking a source.
+    private func healDab(from a: CGPoint, to b: CGPoint) {
+        guard let layer = doc.selectedLayer else { return }
+        let diameter = settings.brushWidth
+        let spacing = max(1, diameter * 0.35)
+        let distance = hypot(b.x - a.x, b.y - a.y)
+        let steps = max(1, Int(distance / spacing))
+        for i in 0...steps {
+            let t = steps == 0 ? 0 : CGFloat(i) / CGFloat(steps)
+            let p = CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+            let offset: CGSize?
+            if settings.tool == .healingBrush {
+                offset = healDelta.map { CGSize(width: -$0.width, height: -$0.height) }
+            } else {
+                offset = PixelOps.bestHealSource(layer: layer, at: p, diameter: diameter)
+            }
+            guard let offset else { continue }
+            PixelOps.heal(layer: layer, at: p, diameter: diameter, offset: offset,
+                          hardness: settings.hardness, clip: doc.selectionPath)
+        }
+    }
+
     private func pickColor(at p: CGPoint, rightButton: Bool) {
         let source: Layer? = settings.sampleMerged
             ? {
@@ -848,6 +933,7 @@ final class ToolEngine {
         ctx.saveGState()
         doc.clipToSelection(ctx)
         ctx.setBlendMode(settings.blendMode.cgBlendMode)
+        ctx.setAlpha(settings.gradientStrength)
         switch settings.gradientKind {
         case .linear:
             ctx.drawLinearGradient(grad, start: a, end: b,
@@ -1128,6 +1214,30 @@ final class ToolEngine {
         return true
     }
 
+    /// A direction line with a knob at each end, drawn dark-on-light so it
+    /// stays readable over whatever is on the canvas.
+    private func drawGuide(_ path: CGPath, in ctx: CGContext, scale: CGFloat) {
+        let points = path.linePoints
+        ctx.saveGState()
+        ctx.setLineCap(.round)
+        ctx.setLineWidth(3 / scale)
+        ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.65).cgColor)
+        ctx.addPath(path); ctx.strokePath()
+        ctx.setLineWidth(1 / scale)
+        ctx.setStrokeColor(NSColor.white.cgColor)
+        ctx.addPath(path); ctx.strokePath()
+        let r = 3.5 / scale
+        for (i, p) in points.enumerated() {
+            let box = CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)
+            ctx.setFillColor(i == 0 ? NSColor.white.cgColor : NSColor.black.cgColor)
+            ctx.fillEllipse(in: box)
+            ctx.setLineWidth(1 / scale)
+            ctx.setStrokeColor(i == 0 ? NSColor.black.cgColor : NSColor.white.cgColor)
+            ctx.strokeEllipse(in: box)
+        }
+        ctx.restoreGState()
+    }
+
     /// Draws the floating pixels, mirroring them if a resize crossed an edge.
     private func drawFloating(_ image: CGImage, in ctx: CGContext) {
         ctx.saveGState()
@@ -1235,7 +1345,11 @@ final class ToolEngine {
             drawSessionChrome(s, in: ctx, scale: scale)
         }
         guard let path = previewPath else { return }
-        if previewIsSelection {
+        if previewStyle == .guide {
+            drawGuide(path, in: ctx, scale: scale)
+            return
+        }
+        if previewStyle == .selection {
             ctx.saveGState()
             ctx.setLineWidth(1 / scale)
             ctx.setStrokeColor(NSColor.white.cgColor)
@@ -1249,5 +1363,19 @@ final class ToolEngine {
             renderShape(path, in: ctx, bounds: doc.bounds)
             ctx.restoreGState()
         }
+    }
+}
+
+extension CGPath {
+    /// The points of a straight two-point path, for drawing its end knobs.
+    var linePoints: [CGPoint] {
+        var points: [CGPoint] = []
+        applyWithBlock { element in
+            switch element.pointee.type {
+            case .moveToPoint, .addLineToPoint: points.append(element.pointee.points[0])
+            default: break
+            }
+        }
+        return points
     }
 }
