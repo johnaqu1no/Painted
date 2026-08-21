@@ -6,6 +6,7 @@ protocol CanvasViewDelegate: AnyObject {
     func canvasWantsTextEntry(_ view: CanvasView, at point: CGPoint)
     func canvasWantsDelete(_ view: CanvasView)
     func canvasDidChangeMeasurement(_ view: CanvasView)
+    func canvas(_ view: CanvasView, didAdjustSetting message: String)
 }
 
 /// Draws the composited document and routes pointer input to the tool engine.
@@ -30,10 +31,21 @@ final class CanvasView: NSView {
     private var antsPhase: CGFloat = 0
     private var antsTimer: Timer?
     private var cachedComposite: CGImage?
+    /// Where the pointer is, in image coordinates, for the brush ring.
+    private var hoverPoint: CGPoint? {
+        didSet {
+            guard settings.tool.hasBrushTip, hoverPoint != oldValue else { return }
+            needsDisplay = true
+        }
+    }
     private var cachedRegion: CGRect = .null
     private var cachedScale: CGFloat = 0
     private var compositeDirty = true
     private var panOrigin: NSPoint?
+    /// Fractional wheel movement waiting to add up to a whole step.
+    private var wheelSteps: CGFloat = 0
+    /// Middle button pans from wherever the pointer is, then hands the canvas
+    /// back to whatever tool was in use.
 
     init(document: Document, engine: ToolEngine, settings: ToolSettings) {
         self.document = document
@@ -186,9 +198,29 @@ final class CanvasView: NSView {
             ctx.restoreGState()
         }
 
+        drawBrushRing(in: ctx, imageRect: r)
+
         ctx.setStrokeColor(NSColor(calibratedWhite: 0.35, alpha: 1).cgColor)
         ctx.setLineWidth(1)
         ctx.stroke(r.insetBy(dx: -0.5, dy: -0.5))
+    }
+
+    /// Outlines what a brush or eraser is about to cover. Drawn in view space
+    /// so the ring keeps a hairline outline at any zoom.
+    private func drawBrushRing(in ctx: CGContext, imageRect r: CGRect) {
+        guard settings.tool.hasBrushTip, let p = hoverPoint else { return }
+        let radius = settings.brushWidth / 2 * zoom
+        guard radius > 1 else { return }
+        let center = CGPoint(x: r.minX + p.x * zoom, y: r.minY + p.y * zoom)
+        let circle = CGRect(x: center.x - radius, y: center.y - radius,
+                            width: radius * 2, height: radius * 2)
+        ctx.saveGState()
+        ctx.setLineWidth(1)
+        ctx.setStrokeColor(NSColor.black.cgColor)
+        ctx.strokeEllipse(in: circle.insetBy(dx: -0.5, dy: -0.5))
+        ctx.setStrokeColor(NSColor.white.cgColor)
+        ctx.strokeEllipse(in: circle.insetBy(dx: 0.5, dy: 0.5))
+        ctx.restoreGState()
     }
 
     private func startAnts() {
@@ -204,6 +236,33 @@ final class CanvasView: NSView {
 
     override func mouseDown(with event: NSEvent) { handleDown(event, right: false) }
     override func rightMouseDown(with event: NSEvent) { handleDown(event, right: true) }
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { super.otherMouseDown(with: event); return }
+        panOrigin = convert(event.locationInWindow, from: nil)
+        NSCursor.closedHand.push()
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        guard panOrigin != nil else { super.otherMouseDragged(with: event); return }
+        panBy(to: convert(event.locationInWindow, from: nil))
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        guard panOrigin != nil else { super.otherMouseUp(with: event); return }
+        panOrigin = nil
+        NSCursor.pop()
+    }
+
+    /// Scrolls the clip view so the point grabbed stays under the pointer.
+    private func panBy(to vp: NSPoint) {
+        guard let origin = panOrigin, let clip = enclosingScrollView?.contentView else { return }
+        var o = clip.bounds.origin
+        o.x -= vp.x - origin.x
+        o.y -= vp.y - origin.y
+        clip.scroll(to: o)
+        enclosingScrollView?.reflectScrolledClipView(clip)
+    }
 
     private func handleDown(_ event: NSEvent, right: Bool) {
         let vp = convert(event.locationInWindow, from: nil)
@@ -231,14 +290,11 @@ final class CanvasView: NSView {
 
     private func handleDrag(_ event: NSEvent) {
         let vp = convert(event.locationInWindow, from: nil)
-        if settings.tool == .pan, let origin = panOrigin, let clip = enclosingScrollView?.contentView {
-            var o = clip.bounds.origin
-            o.x -= vp.x - origin.x
-            o.y -= vp.y - origin.y
-            clip.scroll(to: o)
-            enclosingScrollView?.reflectScrolledClipView(clip)
+        if settings.tool == .pan, panOrigin != nil {
+            panBy(to: vp)
             return
         }
+        hoverPoint = imagePoint(from: vp)
         engine.mouseDragged(to: imagePoint(from: vp), modifiers: event.modifierFlags)
         delegate?.canvas(self, didHoverAt: imagePoint(from: vp))
     }
@@ -254,10 +310,12 @@ final class CanvasView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         let p = imagePoint(from: convert(event.locationInWindow, from: nil))
+        hoverPoint = p
         delegate?.canvas(self, didHoverAt: document.bounds.contains(p) ? p : nil)
     }
 
     override func mouseExited(with event: NSEvent) {
+        hoverPoint = nil
         delegate?.canvas(self, didHoverAt: nil)
     }
 
@@ -292,9 +350,23 @@ final class CanvasView: NSView {
             let factor = 1 + event.scrollingDeltaY * 0.01
             let old = zoom
             zoom = old * factor
-        } else {
-            super.scrollWheel(with: event)
+            return
         }
+        // Option turns the wheel into the tool's dial: size, tolerance,
+        // gradient strength — whatever that tool is mostly about.
+        if event.modifierFlags.contains(.option),
+           let option = settings.adjustable(secondary: event.modifierFlags.contains(.shift)) {
+            wheelSteps += event.hasPreciseScrollingDeltas
+                ? event.scrollingDeltaY / 12
+                : event.scrollingDeltaY
+            let steps = wheelSteps.rounded(.towardZero)
+            guard steps != 0 else { return }
+            wheelSteps -= steps
+            delegate?.canvas(self, didAdjustSetting: settings.adjust(option, steps: steps))
+            needsDisplay = true
+            return
+        }
+        super.scrollWheel(with: event)
     }
 
     override func magnify(with event: NSEvent) {

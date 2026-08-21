@@ -44,7 +44,14 @@ final class ColorsPanel: FloatingPanel {
         palette.addSwatchButton.action = #selector(addCurrentToPalette)
         valueSlider.target = self
         valueSlider.action = #selector(valueChanged)
-        wheel.onPick = { [weak self] c in self?.applyPicked(c) }
+        wheel.onPick = { [weak self] c in
+            guard let self else { return }
+            applyPicked(c)
+            // Picking off a black wheel lifts the value, so the slider and the
+            // fields have to follow it up.
+            valueSlider.doubleValue = Double(wheel.brightness)
+            syncFields()
+        }
 
         for name in PaletteView.presets.keys.sorted() {
             let item = NSMenuItem(title: name, action: #selector(choosePalette(_:)), keyEquivalent: "")

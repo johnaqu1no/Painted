@@ -5,8 +5,23 @@ final class ColorWheelView: NSView {
     /// The wheel itself is always drawn at full brightness, the way the macOS
     /// color wheel behaves; the panel's value slider dims the picked color.
     var brightness: CGFloat = 1.0 { didSet { needsDisplay = true } }
-    var selection: NSColor = .black { didSet { needsDisplay = true } }
+    var selection: NSColor = .black {
+        didSet {
+            let c = selection.usingColorSpace(.deviceRGB) ?? .black
+            // Black and the greys have no hue or saturation to read back, so
+            // the marker keeps the angle it was last dragged to instead of
+            // collapsing into the middle of the wheel.
+            if c.brightnessComponent > 0, c.saturationComponent > 0 {
+                hue = c.hueComponent
+                saturation = c.saturationComponent
+            }
+            needsDisplay = true
+        }
+    }
     var onPick: ((NSColor) -> Void)?
+
+    private(set) var hue: CGFloat = 0
+    private(set) var saturation: CGFloat = 0
 
     private var cache: CGImage?
 
@@ -53,10 +68,9 @@ final class ColorWheelView: NSView {
         if let img = wheelImage(size: CGSize(width: side * scale, height: side * scale)) {
             ctx.draw(img, in: rect)
         }
-        let c = selection.usingColorSpace(.deviceRGB) ?? .black
         let radius = side / 2
-        let angle = c.hueComponent * 2 * .pi
-        let dist = c.saturationComponent * radius
+        let angle = hue * 2 * .pi
+        let dist = saturation * radius
         let pt = CGPoint(x: rect.midX + cos(angle) * dist, y: rect.midY + sin(angle) * dist)
         ctx.setLineWidth(1.5)
         ctx.setStrokeColor(NSColor.white.cgColor)
@@ -69,16 +83,22 @@ final class ColorWheelView: NSView {
     override func mouseDragged(with event: NSEvent) { pick(event) }
 
     private func pick(_ event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
+        pick(at: convert(event.locationInWindow, from: nil))
+    }
+
+    func pick(at p: CGPoint) {
         let side = min(bounds.width, bounds.height)
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
         let dx = p.x - center.x, dy = p.y - center.y
         let radius = side / 2
-        let hue = (atan2(dy, dx) / (2 * .pi) + 1).truncatingRemainder(dividingBy: 1)
-        let sat = min(1, hypot(dx, dy) / radius)
-        // `brightness` mirrors the panel slider so picking respects the value.
+        hue = (atan2(dy, dx) / (2 * .pi) + 1).truncatingRemainder(dividingBy: 1)
+        saturation = min(1, hypot(dx, dy) / radius)
+        // `brightness` mirrors the panel slider so picking respects the value,
+        // except at zero: the wheel would answer black wherever it was clicked,
+        // which reads as a dead control.
+        if brightness == 0 { brightness = 1 }
         let color = NSColor.fromHSV(h: Int((hue * 360).rounded()),
-                                    s: Int((sat * 100).rounded()),
+                                    s: Int((saturation * 100).rounded()),
                                     v: Int((brightness * 100).rounded()))
         selection = color
         onPick?(color)
