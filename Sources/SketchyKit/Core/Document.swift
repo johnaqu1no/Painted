@@ -261,8 +261,12 @@ final class Document {
             let l = Layer(width: nw, height: nh, name: old.name)
             l.isVisible = old.isVisible; l.opacity = old.opacity; l.blendMode = old.blendMode
             if let img = old.image {
+                // Resampling is a choice about this one draw, not a setting the
+                // layer keeps for whatever a tool paints next.
+                l.context.saveGState()
                 l.context.interpolationQuality = resampling.quality
                 l.context.draw(img, in: target)
+                l.context.restoreGState()
             }
             return l
         }

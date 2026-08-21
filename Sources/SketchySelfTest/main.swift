@@ -1417,6 +1417,35 @@ do {
     equal(centered.history.currentTitle, "Canvas Size", "one history step")
 }
 
+section("document commands leave the layer clean")
+do {
+    // Building a layer through a transform or a quality setting must not leave
+    // it behind: the layer outlives the command and every later edit inherits
+    // whatever state was left on its context.
+    func check(_ name: String, _ body: (Document) -> Void) {
+        let doc = Document(width: 12, height: 8, background: nil)
+        doc.selectedLayer?.fill(with: .red)
+        body(doc)
+        guard let ctx = doc.selectedLayer?.context else { return }
+        equal(ctx.ctm, CGAffineTransform(scaleX: 1, y: 1), "\(name) leaves no transform behind")
+        equal(ctx.interpolationQuality, .high, "\(name) leaves the default resampling")
+    }
+
+    check("rotate") { $0.rotate(turns: 1) }
+    check("rotate 180") { $0.rotate(turns: 2) }
+    check("crop") { $0.crop(to: CGRect(x: 1, y: 1, width: 6, height: 4)) }
+    check("canvas size") { $0.resizeCanvas(to: CGSize(width: 20, height: 20)) }
+    check("image size") {
+        $0.resizeImage(to: CGSize(width: 24, height: 16), anchor: CGPoint(x: 0.5, y: 0.5),
+                       fit: true, resampling: .pixels)
+    }
+    check("flip") { $0.flip(horizontal: true) }
+    check("flip vertical") { $0.flip(horizontal: false) }
+    check("rotate layer") { doc in
+        if let l = doc.selectedLayer { doc.transformLayer(l, angle: 0.4, scale: 1.2, offset: .zero) }
+    }
+}
+
 section("editing after a rotate")
 do {
     // 20x10, red on the left, blue on the right. A clockwise turn puts red at
