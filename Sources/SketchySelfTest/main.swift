@@ -1975,6 +1975,63 @@ do {
     check(grouped.history.currentTitle != "Text", "text refuses a group like every other paint tool")
 }
 
+windowSection("zooming keeps the pointer on the same pixel") {
+    let doc = Document(width: 400, height: 400)
+    let settings = ToolSettings()
+    let engine = ToolEngine(doc: doc, settings: settings)
+    let canvas = CanvasView(document: doc, engine: engine, settings: settings)
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 300))
+    scroll.hasVerticalScroller = true
+    scroll.hasHorizontalScroller = true
+    scroll.documentView = canvas
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = scroll
+    canvas.zoom = 1
+    canvas.layoutSubtreeIfNeeded()
+
+    func imagePoint(under windowPoint: NSPoint) -> CGPoint {
+        canvas.imagePoint(from: canvas.convert(windowPoint, from: nil))
+    }
+
+    // A point well off centre is the interesting one: a centred zoom moves it.
+    let pointer = NSPoint(x: 60, y: 220)
+    let before = imagePoint(under: pointer)
+    canvas.setZoom(4, anchoredAt: pointer)
+    canvas.layoutSubtreeIfNeeded()
+    let after = imagePoint(under: pointer)
+    near(after.x, before.x, 1, "the pixel under the pointer stays there across a zoom in")
+    near(after.y, before.y, 1, "vertically too")
+
+    canvas.setZoom(1, anchoredAt: pointer)
+    canvas.layoutSubtreeIfNeeded()
+    let back = imagePoint(under: pointer)
+    near(back.x, before.x, 1, "and across a zoom back out")
+    near(back.y, before.y, 1, "in both directions")
+
+    // A corner has to be reachable, or zooming into it would slide away.
+    let corner = NSPoint(x: 4, y: 4)
+    let cornerBefore = imagePoint(under: corner)
+    canvas.setZoom(8, anchoredAt: corner)
+    canvas.layoutSubtreeIfNeeded()
+    let cornerAfter = imagePoint(under: corner)
+    near(cornerAfter.x, cornerBefore.x, 2, "the canvas scrolls past its edge to hold a corner")
+    near(cornerAfter.y, cornerBefore.y, 2, "in both directions")
+
+    // Without an anchor the middle of the viewport is what holds still.
+    canvas.setZoom(2, anchoredAt: nil)
+    canvas.layoutSubtreeIfNeeded()
+    let middle = NSPoint(x: scroll.contentView.documentVisibleRect.midX,
+                         y: scroll.contentView.documentVisibleRect.midY)
+    let centreBefore = canvas.imagePoint(from: middle)
+    canvas.setZoom(6, anchoredAt: nil)
+    canvas.layoutSubtreeIfNeeded()
+    let after2 = NSPoint(x: scroll.contentView.documentVisibleRect.midX,
+                         y: scroll.contentView.documentVisibleRect.midY)
+    near(canvas.imagePoint(from: after2).x, centreBefore.x, 1, "an unanchored zoom holds the centre")
+    near(canvas.imagePoint(from: after2).y, centreBefore.y, 1, "in both directions")
+}
+
 windowSection("the text box holds its place while zooming") {
     let doc = Document(width: 200, height: 200)
     let settings = ToolSettings()

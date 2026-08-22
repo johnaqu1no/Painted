@@ -119,9 +119,40 @@ final class CanvasView: NSView {
     func resizeToFit() {
         guard let clip = enclosingScrollView?.contentView else { return }
         let s = scaledSize
-        let w = max(clip.bounds.width, s.width + 40)
-        let h = max(clip.bounds.height, s.height + 40)
+        // Room to scroll past the edges. Without it a corner can never sit in
+        // the middle of the viewport, so zooming into one has to slide away
+        // from the pointer.
+        let padX = max(40, clip.bounds.width * 0.9)
+        let padY = max(40, clip.bounds.height * 0.9)
+        let w = max(clip.bounds.width, s.width + padX * 2)
+        let h = max(clip.bounds.height, s.height + padY * 2)
         setFrameSize(NSSize(width: w, height: h))
+    }
+
+    /// Zooms so the image point under `windowPoint` stays under it. Without an
+    /// anchor the middle of what is on screen holds still, which is what the
+    /// menu commands want.
+    func setZoom(_ newZoom: CGFloat, anchoredAt windowPoint: NSPoint?) {
+        guard let clip = enclosingScrollView?.contentView else {
+            zoom = newZoom
+            return
+        }
+        let visible = clip.documentVisibleRect
+        let anchorInView = windowPoint.map { convert($0, from: nil) }
+            ?? NSPoint(x: visible.midX, y: visible.midY)
+        let anchorInImage = imagePoint(from: anchorInView)
+        // Where the pointer sits inside the viewport, which is what has to
+        // stay put — the view coordinate itself moves with the scroll.
+        let inViewport = NSPoint(x: anchorInView.x - clip.bounds.origin.x,
+                                 y: anchorInView.y - clip.bounds.origin.y)
+        zoom = newZoom
+        layoutSubtreeIfNeeded()
+        let r = imageRect
+        let moved = NSPoint(x: r.minX + anchorInImage.x * zoom,
+                            y: r.minY + anchorInImage.y * zoom)
+        clip.scroll(to: NSPoint(x: moved.x - inViewport.x, y: moved.y - inViewport.y))
+        enclosingScrollView?.reflectScrolledClipView(clip)
+        needsDisplay = true
     }
 
     func imagePoint(from viewPoint: NSPoint) -> CGPoint {
@@ -344,7 +375,8 @@ final class CanvasView: NSView {
             panOrigin = vp
             return
         case .zoom:
-            if event.modifierFlags.contains(.option) || right { zoom /= 1.25 } else { zoom *= 1.25 }
+            let factor: CGFloat = (event.modifierFlags.contains(.option) || right) ? 1 / 1.25 : 1.25
+            setZoom(zoom * factor, anchoredAt: event.locationInWindow)
             return
         case .text:
             // The drag decides how big the box is; a plain click leaves it to
@@ -442,8 +474,7 @@ final class CanvasView: NSView {
     override func scrollWheel(with event: NSEvent) {
         if event.modifierFlags.contains(.command) {
             let factor = 1 + event.scrollingDeltaY * 0.01
-            let old = zoom
-            zoom = old * factor
+            setZoom(zoom * factor, anchoredAt: event.locationInWindow)
             return
         }
         // Option turns the wheel into the tool's dial: size, tolerance,
@@ -464,7 +495,7 @@ final class CanvasView: NSView {
     }
 
     override func magnify(with event: NSEvent) {
-        zoom *= (1 + event.magnification)
+        setZoom(zoom * (1 + event.magnification), anchoredAt: event.locationInWindow)
     }
 
     override func updateTrackingAreas() {

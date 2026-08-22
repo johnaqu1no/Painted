@@ -80,7 +80,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         statusBar = StatusBar()
         statusBar.frame = NSRect(x: 0, y: 0, width: full.width, height: 24)
         statusBar.autoresizingMask = [.width, .maxYMargin]
-        statusBar.onZoomSlider = { [weak self] z in self?.canvas.zoom = z }
+        statusBar.onZoomSlider = { [weak self] z in self?.canvas.setZoom(z, anchoredAt: nil) }
 
         // Showing or hiding the tab bar resizes the content view without
         // resizing the window, so watch the view rather than the window.
@@ -763,9 +763,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
 
     // MARK: - View menu
 
-    @objc func zoomIn(_ sender: Any?) { canvas.zoom *= 1.25 }
-    @objc func zoomOut(_ sender: Any?) { canvas.zoom /= 1.25 }
-    @objc func zoomActual(_ sender: Any?) { canvas.zoom = 1 }
+    @objc func zoomIn(_ sender: Any?) { canvas.setZoom(canvas.zoom * 1.25, anchoredAt: nil) }
+    @objc func zoomOut(_ sender: Any?) { canvas.setZoom(canvas.zoom / 1.25, anchoredAt: nil) }
+    @objc func zoomActual(_ sender: Any?) { canvas.setZoom(1, anchoredAt: nil) }
     @objc func zoomToFit(_ sender: Any?) { canvas.zoomToFit() }
     private func togglePalette(_ id: String) {
         guard let palette = dock.palette(id: id) else { return }
