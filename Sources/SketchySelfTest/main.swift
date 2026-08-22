@@ -1691,6 +1691,20 @@ do {
     check((pixel(doc, 18, 18)?.a ?? 0) > 200, "with the pixels the crop threw away")
 }
 
+windowSection("the layers buttons say what they do") {
+    let panel = LayersPanel()
+    let hinting = panel.buttonStrip.compactMap { $0 as? HintingButton }
+    equal(hinting.count, panel.buttonStrip.count, "every strip button hints")
+    check(hinting.allSatisfy { $0.toolTip?.isEmpty == false }, "and keeps its tooltip")
+    check(hinting.allSatisfy { $0.hint == $0.toolTip }, "with the same wording")
+
+    equal(panel.hintText, "", "the hint line starts empty")
+    hinting.first?.onHint?(hinting.first?.hint)
+    equal(panel.hintText, "Add a new layer", "entering a button explains it")
+    hinting.first?.onHint?(nil)
+    equal(panel.hintText, "", "and leaving clears it")
+}
+
 windowSection("the layers palette folds a group away") {
     let doc = Document(width: 8, height: 8, background: nil)
     doc.addLayer(named: "B")

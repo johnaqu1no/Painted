@@ -6,8 +6,12 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
     private let blendPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let opacitySlider = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private let opacityLabel = NSTextField(labelWithString: "100%")
-    private var buttonStrip: [NSButton] = []
+    private(set) var buttonStrip: [NSButton] = []
     private let blendLabel = NSTextField(labelWithString: "Blend")
+    /// What the button under the pointer does. The icons are small and a
+    /// tooltip only shows up if the pointer sits still long enough; this says
+    /// it straight away.
+    private let hintLabel = NSTextField(labelWithString: "")
     private let opacityTitle = NSTextField(labelWithString: "Opacity")
     private var scroll: NSScrollView!
     /// The palette body. Held directly because `contentView` is swapped for an
@@ -88,13 +92,20 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
             ("wrench.and.screwdriver", #selector(propertiesTapped), "Layer properties")
         ]
         for spec in specs {
-            let b = NSButton(image: NSImage.symbol(spec.0, spec.2),
-                             target: self, action: spec.1)
+            let b = HintingButton(image: NSImage.symbol(spec.0, spec.2),
+                                  target: self, action: spec.1)
             b.isBordered = false
             b.toolTip = spec.2
+            b.hint = spec.2
+            b.onHint = { [weak self] text in self?.showHint(text) }
             content.addSubview(b)
             buttonStrip.append(b)
         }
+
+        hintLabel.font = .systemFont(ofSize: 10)
+        hintLabel.textColor = .secondaryLabelColor
+        hintLabel.lineBreakMode = .byTruncatingTail
+        content.addSubview(hintLabel)
         content.postsFrameChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(contentResized),
                                                name: NSView.frameDidChangeNotification, object: content)
@@ -117,10 +128,12 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         for (i, b) in buttonStrip.enumerated() {
             let row = buttonRows - 1 - (i / perRow), col = i % perRow
             b.frame = NSRect(x: margin + CGFloat(col) * spacing,
-                             y: 6 + CGFloat(row) * 26, width: 28, height: 24)
+                             y: 19 + CGFloat(row) * 26, width: 28, height: 24)
         }
 
-        var y = 6 + CGFloat(buttonRows) * 26 + 4
+        hintLabel.frame = NSRect(x: margin, y: 3, width: max(40, w - margin * 2), height: 13)
+
+        var y = 19 + CGFloat(buttonRows) * 26 + 4
         let stacked = w < 200
         let labelWidth: CGFloat = 56
         let controlX = stacked ? margin : margin + labelWidth + 6
@@ -145,6 +158,14 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         }
 
         scroll.frame = NSRect(x: 0, y: y, width: w, height: max(40, content.bounds.height - y))
+    }
+
+    /// What the hint line currently reads.
+    var hintText: String { hintLabel.stringValue }
+
+    /// Shows what the pointer is over, and clears it when the pointer leaves.
+    private func showHint(_ text: String?) {
+        hintLabel.stringValue = text ?? ""
     }
 
     func attach(_ doc: Document) {
@@ -241,6 +262,7 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         let layer = doc.layers[modelIndex(forRow: row)]
         let cell = LayerCellView()
         cell.apply(layer)
+        cell.toolTip = layer.name
         cell.visibility.tag = row
         cell.visibility.target = self
         cell.visibility.action = #selector(visibilityToggled(_:))
@@ -314,6 +336,24 @@ final class LayersPanel: FloatingPanel, NSTableViewDataSource, NSTableViewDelega
         }
         onChange?()
     }
+}
+
+/// A button that says what it does while the pointer is over it, instead of
+/// waiting on a tooltip that may never come.
+final class HintingButton: NSButton {
+    var hint: String?
+    var onHint: ((String?) -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                       options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHint?(hint) }
+    override func mouseExited(with event: NSEvent) { onHint?(nil) }
 }
 
 /// One row in the Layers table: thumbnail, name, visibility checkbox. Group
