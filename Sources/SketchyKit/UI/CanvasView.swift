@@ -3,7 +3,9 @@ import AppKit
 protocol CanvasViewDelegate: AnyObject {
     func canvasDidChangeZoom(_ view: CanvasView)
     func canvas(_ view: CanvasView, didHoverAt point: CGPoint?)
-    func canvasWantsTextEntry(_ view: CanvasView, at point: CGPoint)
+    /// `box` is where the text should go, in image coordinates. A box with no
+    /// width is a plain click: the caller picks a default size.
+    func canvasWantsTextEntry(_ view: CanvasView, in box: CGRect)
     func canvasWantsDelete(_ view: CanvasView)
     func canvasDidChangeMeasurement(_ view: CanvasView)
     func canvas(_ view: CanvasView, didAdjustSetting message: String)
@@ -23,6 +25,7 @@ final class CanvasView: NSView {
             zoom = min(32, max(0.05, zoom))
             invalidateIntrinsicContentSize()
             resizeToFit()
+            layoutTextBox()
             needsDisplay = true
             delegate?.canvasDidChangeZoom(self)
         }
@@ -44,6 +47,11 @@ final class CanvasView: NSView {
     private var panOrigin: NSPoint?
     /// Fractional wheel movement waiting to add up to a whole step.
     private var wheelSteps: CGFloat = 0
+    /// The live text box, kept lined up with the canvas as it zooms.
+    private(set) var textBox: TextBoxOverlay?
+    /// Where a drag with the text tool began, and the box it has swept out.
+    private var textBoxStart: CGPoint?
+    private var textBoxRect: CGRect?
     /// Middle button pans from wherever the pointer is, then hands the canvas
     /// back to whatever tool was in use.
 
@@ -139,10 +147,60 @@ final class CanvasView: NSView {
         return region.insetBy(dx: -1, dy: -1).integral.intersection(document.bounds)
     }
 
+    // MARK: - Text box
+
+    /// Puts a text box on the canvas at `box` (image coordinates) and keeps it
+    /// there through zooming and scrolling.
+    func showTextBox(_ overlay: TextBoxOverlay, at box: CGRect) {
+        removeTextBox()
+        overlay.imageBox = box
+        addSubview(overlay)
+        textBox = overlay
+        overlay.onResize = { [weak self, weak overlay] in
+            guard let self, let overlay else { return }
+            overlay.imageBox = imageBox(forViewFrame: overlay.frame)
+        }
+        layoutTextBox()
+        window?.makeFirstResponder(overlay.textView)
+    }
+
+    func removeTextBox() {
+        textBox?.removeFromSuperview()
+        textBox = nil
+    }
+
+    /// Frame the overlay needs so its box covers the same pixels as before.
+    private func viewFrame(forImageBox box: CGRect) -> NSRect {
+        let r = imageRect
+        let reach = TextBoxOverlay.handleReach
+        return NSRect(x: r.minX + box.minX * zoom - reach,
+                      y: r.minY + box.minY * zoom - reach,
+                      width: box.width * zoom + reach * 2,
+                      height: box.height * zoom + reach * 2)
+    }
+
+    private func imageBox(forViewFrame frame: NSRect) -> CGRect {
+        let r = imageRect
+        let reach = TextBoxOverlay.handleReach
+        return CGRect(x: (frame.minX + reach - r.minX) / zoom,
+                      y: (frame.minY + reach - r.minY) / zoom,
+                      width: max(1, frame.width - reach * 2) / zoom,
+                      height: max(1, frame.height - reach * 2) / zoom)
+    }
+
+    func layoutTextBox() {
+        guard let overlay = textBox else { return }
+        overlay.frame = viewFrame(forImageBox: overlay.imageBox)
+        overlay.apply(zoom: zoom)
+        overlay.needsDisplay = true
+    }
+
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        // Scrolling and window resizing move the image under the box.
+        layoutTextBox()
         NSColor(calibratedWhite: 0.16, alpha: 1).setFill()
         dirtyRect.intersection(bounds).fill()
 
@@ -184,6 +242,19 @@ final class CanvasView: NSView {
         engine.viewScale = zoom
         engine.drawOverlay(in: ctx, scale: zoom)
         ctx.restoreGState()
+
+        if let box = textBoxRect {
+            ctx.saveGState()
+            ctx.translateBy(x: r.minX, y: r.minY)
+            ctx.scaleBy(x: zoom, y: zoom)
+            ctx.setLineWidth(1 / zoom)
+            ctx.setStrokeColor(NSColor.black.cgColor)
+            ctx.stroke(box)
+            ctx.setStrokeColor(NSColor.white.cgColor)
+            ctx.setLineDash(phase: 0, lengths: [4 / zoom, 4 / zoom])
+            ctx.stroke(box)
+            ctx.restoreGState()
+        }
 
         if let sel = document.selectionPath {
             ctx.saveGState()
@@ -276,7 +347,10 @@ final class CanvasView: NSView {
             if event.modifierFlags.contains(.option) || right { zoom /= 1.25 } else { zoom *= 1.25 }
             return
         case .text:
-            delegate?.canvasWantsTextEntry(self, at: p)
+            // The drag decides how big the box is; a plain click leaves it to
+            // the caller.
+            textBoxStart = p
+            textBoxRect = nil
             return
         default:
             break
@@ -295,6 +369,13 @@ final class CanvasView: NSView {
             return
         }
         hoverPoint = imagePoint(from: vp)
+        if let start = textBoxStart, settings.tool == .text {
+            textBoxRect = CGRect(x: min(start.x, hoverPoint!.x), y: min(start.y, hoverPoint!.y),
+                                 width: abs(hoverPoint!.x - start.x),
+                                 height: abs(hoverPoint!.y - start.y))
+            needsDisplay = true
+            return
+        }
         engine.mouseDragged(to: imagePoint(from: vp), modifiers: event.modifierFlags)
         delegate?.canvas(self, didHoverAt: imagePoint(from: vp))
     }
@@ -305,6 +386,19 @@ final class CanvasView: NSView {
     private func handleUp(_ event: NSEvent) {
         panOrigin = nil
         let p = imagePoint(from: convert(event.locationInWindow, from: nil))
+        if let start = textBoxStart, settings.tool == .text {
+            textBoxStart = nil
+            textBoxRect = nil
+            needsDisplay = true
+            let swept = CGRect(x: min(start.x, p.x), y: min(start.y, p.y),
+                               width: abs(p.x - start.x), height: abs(p.y - start.y))
+            // Too small to have been meant as a box: treat it as a click.
+            let box = swept.width < 8 || swept.height < 8
+                ? CGRect(origin: start, size: .zero)
+                : swept
+            delegate?.canvasWantsTextEntry(self, in: box)
+            return
+        }
         engine.mouseUp(at: p, modifiers: event.modifierFlags)
     }
 

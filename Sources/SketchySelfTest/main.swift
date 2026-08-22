@@ -1927,6 +1927,81 @@ do {
           "and no resampling setting behind")
 }
 
+section("text lands in the box it was given")
+do {
+    let doc = Document(width: 120, height: 60, background: nil)
+    let settings = ToolSettings()
+    let engine = ToolEngine(doc: doc, settings: settings)
+    let attrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.white
+    ]
+    let words = NSAttributedString(string: "wrap these words onto several lines", attributes: attrs)
+
+    // A narrow box wraps; the ink stays inside it.
+    engine.commitText(words, in: CGRect(x: 10, y: 10, width: 40, height: 40))
+    func inked(_ rect: CGRect) -> Int {
+        guard let layer = doc.selectedLayer else { return 0 }
+        var count = 0
+        for y in Int(rect.minY)..<Int(rect.maxY) {
+            for x in Int(rect.minX)..<Int(rect.maxX) where (PixelOps.sample(layer, x: x, y: y)?.a ?? 0) > 30 {
+                count += 1
+            }
+        }
+        return count
+    }
+    check(inked(CGRect(x: 10, y: 10, width: 40, height: 40)) > 20, "the text is drawn in the box")
+    equal(inked(CGRect(x: 55, y: 10, width: 60, height: 40)), 0, "and nothing spills to the right of it")
+    equal(doc.history.currentTitle, "Text", "the text is one undo step")
+
+    // A wider box needs fewer lines, so it reaches further right.
+    let wide = Document(width: 120, height: 60, background: nil)
+    let wideEngine = ToolEngine(doc: wide, settings: settings)
+    wideEngine.commitText(words, in: CGRect(x: 10, y: 10, width: 100, height: 40))
+    func rightmostInk(_ d: Document) -> Int {
+        guard let layer = d.selectedLayer else { return 0 }
+        var edge = 0
+        for x in 0..<d.width {
+            for y in 0..<d.height where (PixelOps.sample(layer, x: x, y: y)?.a ?? 0) > 30 { edge = max(edge, x) }
+        }
+        return edge
+    }
+    check(rightmostInk(wide) > rightmostInk(doc), "a wider box lets the line run further")
+
+    // A group has no pixels to draw into.
+    let grouped = Document(width: 40, height: 40, background: nil)
+    grouped.groupSelected()
+    let groupEngine = ToolEngine(doc: grouped, settings: settings)
+    groupEngine.commitText(words, in: CGRect(x: 2, y: 2, width: 30, height: 30))
+    check(grouped.history.currentTitle != "Text", "text refuses a group like every other paint tool")
+}
+
+windowSection("the text box holds its place while zooming") {
+    let doc = Document(width: 200, height: 200)
+    let settings = ToolSettings()
+    settings.tool = .text
+    let engine = ToolEngine(doc: doc, settings: settings)
+    let canvas = CanvasView(document: doc, engine: engine, settings: settings)
+    canvas.setFrameSize(NSSize(width: 400, height: 400))
+
+    let box = CGRect(x: 20, y: 30, width: 80, height: 40)
+    let overlay = TextBoxOverlay(frame: .zero, font: .systemFont(ofSize: 12), color: .white)
+    canvas.showTextBox(overlay, at: box)
+    let atOne = overlay.frame
+
+    canvas.zoom = 2
+    equal(overlay.imageBox, box, "zooming does not move the box off its pixels")
+    near(overlay.frame.width, atOne.width * 2 - TextBoxOverlay.handleReach * 2, 1.5,
+         "the box on screen doubles with the canvas")
+    near(overlay.textView.font?.pointSize ?? 0, 24, 0.5, "and the text is shown at the size it will paint")
+
+    canvas.zoom = 1
+    near(overlay.frame.minX, atOne.minX, 1, "and comes back to where it started")
+    near(overlay.frame.minY, atOne.minY, 1, "in both directions")
+
+    canvas.removeTextBox()
+    check(canvas.textBox == nil, "the box goes away when it is committed")
+}
+
 section("layer groups")
 do {
     // Bottom to top: Background, Middle, Top.

@@ -1013,15 +1013,16 @@ final class ToolEngine {
 
     // MARK: - Text
 
-    func commitText(_ string: NSAttributedString, at origin: CGPoint) {
-        guard let layer = doc.selectedLayer, string.length > 0 else { return }
+    /// Paints text into `box`, wrapping to its width the way the live text box
+    /// did while it was being typed.
+    func commitText(_ string: NSAttributedString, in box: CGRect) {
+        guard let layer = doc.selectedRasterLayer, string.length > 0, !box.isEmpty else { return }
         let ctx = layer.context
         ctx.saveGState()
         doc.clipToSelection(ctx)
         ctx.setBlendMode(settings.blendMode.cgBlendMode)
         ctx.textMatrix = .identity
         let framesetter = CTFramesetterCreateWithAttributedString(string)
-        let box = CGRect(x: origin.x, y: 0, width: CGFloat(layer.width) - origin.x, height: origin.y)
         let path = CGPath(rect: box, transform: nil)
         let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, 0), path, nil)
         CTFrameDraw(frame, ctx)

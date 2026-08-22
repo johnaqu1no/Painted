@@ -25,8 +25,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     var layersPanel: LayersPanel { hub.layersPanel }
     var dock: DockManager { hub.dock }
     private var documentChip: NSButton?
-    private var textOverlay: NSTextView?
-    private var textOrigin: CGPoint = .zero
+    private var textOverlay: TextBoxOverlay?
     private var clipboardImage: CGImage?
 
     init(doc: Document, hub: PaletteHub) {
@@ -290,26 +289,23 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
         statusBar.setMeasurement(engine.measuredRect)
     }
 
-    func canvasWantsTextEntry(_ view: CanvasView, at point: CGPoint) {
+    func canvasWantsTextEntry(_ view: CanvasView, in box: CGRect) {
         commitTextOverlay()
         let font = fontForSettings()
-        let height = font.pointSize * 1.6
-        let rect = NSRect(x: 0, y: 0, width: 320, height: height)
-        let tv = NSTextView(frame: rect)
-        tv.font = font
-        tv.textColor = colorsPanel.primary
-        tv.backgroundColor = NSColor(white: 0, alpha: 0.12)
-        tv.isRichText = false
-        tv.delegate = nil
-        tv.drawsBackground = true
-
-        let r = view.imageRect
-        tv.setFrameOrigin(NSPoint(x: r.minX + point.x * view.zoom,
-                                  y: r.minY + point.y * view.zoom - height))
-        view.addSubview(tv)
-        textOverlay = tv
-        textOrigin = point
-        window?.makeFirstResponder(tv)
+        // A plain click gets a box wide enough for a line of text; a drag says
+        // exactly how big it should be.
+        let imageBox = box.width < 1 || box.height < 1
+            ? CGRect(x: box.minX, y: box.minY - font.pointSize * 1.6,
+                     width: 320, height: font.pointSize * 1.6)
+            : box
+        let overlay = TextBoxOverlay(frame: .zero, font: font, color: colorsPanel.primary)
+        overlay.onCommit = { [weak self] in self?.commitTextOverlay() }
+        overlay.onCancel = { [weak self] in
+            self?.canvas.removeTextBox()
+            self?.textOverlay = nil
+        }
+        view.showTextBox(overlay, at: imageBox)
+        textOverlay = overlay
     }
 
     private func fontForSettings() -> NSFont {
@@ -325,9 +321,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
     }
 
     @objc func commitTextOverlay() {
-        guard let tv = textOverlay else { return }
-        let text = tv.string
-        tv.removeFromSuperview()
+        guard let overlay = textOverlay else { return }
+        let text = overlay.string
+        let box = overlay.imageBox
+        canvas.removeTextBox()
         textOverlay = nil
         guard !text.isEmpty else { return }
         var attrs: [NSAttributedString.Key: Any] = [
@@ -335,7 +332,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, CanvasV
             .foregroundColor: colorsPanel.primary
         ]
         if settings.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
-        engine.commitText(NSAttributedString(string: text, attributes: attrs), at: textOrigin)
+        engine.commitText(NSAttributedString(string: text, attributes: attrs), in: box)
         refreshPanels()
     }
 

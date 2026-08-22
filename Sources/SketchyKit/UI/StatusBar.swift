@@ -151,7 +151,8 @@ final class StatusBar: NSView {
             parts = [("Drag", "Place gradient"), ("Right-drag", "Reverse colors"),
                      ("⌥scroll", "Strength")]
         case .text:
-            parts = [("Click", "Place text"), ("⏎", "Commit"), ("⎋", "Cancel")]
+            parts = [("Drag", "Size the box"), ("Handles", "Resize"),
+                     ("⌘⏎", "Commit"), ("⎋", "Cancel")]
         case .zoom:
             parts = [("Click", "Zoom in"), ("⌥-click", "Zoom out")]
         case .pan:
