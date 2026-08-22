@@ -161,8 +161,8 @@ final class StatusBar: NSView {
             parts = [("Drag", "Move"), ("Handles", "Resize"), ("⇧", "Keep proportions"),
                      ("⌘D", "Deselect")]
         case .moveSelectedPixels:
-            parts = [("Drag", "Move"), ("Handles", "Resize"), ("⇧", "Keep proportions"),
-                     ("⏎", "Drop"), ("⎋", "Put back")]
+            parts = [("Drag", "Move"), ("Handles", "Resize"), ("Knob", "Rotate"),
+                     ("⇧", "Proportions / 15°"), ("⏎", "Drop"), ("⎋", "Put back")]
         case .recolor:
             parts = [("Drag", "Replace secondary with primary"), ("Right-drag", "Reverse")]
         }

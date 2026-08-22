@@ -43,6 +43,11 @@ final class ToolEngine {
     /// The outline from before the float started, so a cancel restores it too.
     private var floatingStartSelection: CGPath?
     /// Set when a resize drag crossed the opposite edge and mirrored the pixels.
+    /// How far the floating pixels have been turned, in radians.
+    private var floatingAngle: CGFloat = 0
+    private var floatingDragAngle: CGFloat = 0
+    /// Pointer angle when a rotation drag began, so turning is relative.
+    private var floatingGrabAngle: CGFloat = 0
     private var floatingFlippedX = false
     private var floatingFlippedY = false
     /// Flip state when the current drag began, so mirroring is derived from the
@@ -127,7 +132,7 @@ final class ToolEngine {
     /// overrides it.
     private var activeSelectionMode: SelectionMode = .replace
     /// Which part of the selection outline the current drag grabbed.
-    private enum SelectionGrab { case none, move, resize(Int) }
+    private enum SelectionGrab { case none, move, resize(Int), rotate }
     private var selectionGrab: SelectionGrab = .none
     private var pendingCommitTitle: String?
 
@@ -229,6 +234,8 @@ final class ToolEngine {
             floatingDragFrame = floatingFrame
             floatingDragFlipX = floatingFlippedX
             floatingDragFlipY = floatingFlippedY
+            floatingDragAngle = floatingAngle
+            floatingGrabAngle = angle(from: floatingCentre(floatingFrame), to: p)
         default:
             break
         }
@@ -606,7 +613,7 @@ final class ToolEngine {
         guard !box.isEmpty else { return }
 
         switch selectionGrab {
-        case .none:
+        case .none, .rotate:
             return
         case .move:
             var t = CGAffineTransform(translationX: p.x - dragStart.x, y: p.y - dragStart.y)
@@ -1133,6 +1140,8 @@ final class ToolEngine {
         floatingFlippedY = false
         floatingDragFlipX = false
         floatingDragFlipY = false
+        floatingAngle = 0
+        floatingDragAngle = 0
         floatingUndoSnapshot = full
         floatingStartSelection = doc.selectionPath
         floatingTitle = "Move Selected Pixels"
@@ -1158,6 +1167,8 @@ final class ToolEngine {
         floatingFlippedY = false
         floatingDragFlipX = false
         floatingDragFlipY = false
+        floatingAngle = 0
+        floatingDragAngle = 0
         floatingUndoSnapshot = nil
         floatingStartSelection = doc.selectionPath
         floatingTitle = "Paste"
@@ -1169,20 +1180,65 @@ final class ToolEngine {
     /// Where the floating pixels currently sit, in image coordinates.
     var floatingRect: CGRect { floatingImage == nil ? .zero : floatingFrame }
 
+    /// The turn applied to the floating pixels, about the middle of their box.
+    var floatingRotation: CGFloat { floatingAngle }
+
+    private var floatingTransform: CGAffineTransform {
+        let c = floatingCentre(floatingFrame)
+        return CGAffineTransform(translationX: c.x, y: c.y)
+            .rotated(by: floatingAngle)
+            .translatedBy(x: -c.x, y: -c.y)
+    }
+
+    /// A pointer position expressed in the box's own upright frame, so the
+    /// resize maths never has to think about the rotation.
+    private func upright(_ p: CGPoint) -> CGPoint {
+        p.applying(floatingTransform.inverted())
+    }
+
+    private func floatingCentre(_ r: CGRect) -> CGPoint {
+        CGPoint(x: r.midX, y: r.midY)
+    }
+
+    private func angle(from centre: CGPoint, to p: CGPoint) -> CGFloat {
+        atan2(p.y - centre.y, p.x - centre.x)
+    }
+
+    /// The outline of the floating pixels, turned as they are.
+    func floatingOutline() -> CGPath {
+        var t = floatingTransform
+        let box = CGPath(rect: floatingFrame, transform: nil)
+        return box.copy(using: &t) ?? box
+    }
+
+    /// Where the rotation knob sits: off the top edge, turned with the box.
+    func floatingRotationKnob() -> CGPoint? {
+        guard floatingImage != nil else { return nil }
+        let r = floatingFrame
+        let reach = max(14 / viewScale, 10)
+        return CGPoint(x: r.midX, y: r.maxY + reach).applying(floatingTransform)
+    }
+
     /// Handles around the floating pixels, in the same order as the selection's.
     func floatingHandles() -> [CGPoint] {
         guard floatingImage != nil else { return [] }
         let r = floatingFrame
+        let t = floatingTransform
         return [
             CGPoint(x: r.minX, y: r.minY), CGPoint(x: r.midX, y: r.minY),
             CGPoint(x: r.maxX, y: r.minY), CGPoint(x: r.maxX, y: r.midY),
             CGPoint(x: r.maxX, y: r.maxY), CGPoint(x: r.midX, y: r.maxY),
             CGPoint(x: r.minX, y: r.maxY), CGPoint(x: r.minX, y: r.midY)
-        ]
+        ].map { $0.applying(t) }
     }
 
     private func grabForFloating(at p: CGPoint) -> SelectionGrab {
-        grab(at: p, handles: floatingHandles(), box: floatingFrame)
+        // The knob wins: it sits outside the box, where nothing else listens.
+        if let knob = floatingRotationKnob() {
+            let slop = max(6, 9 / viewScale)
+            if hypot(knob.x - p.x, knob.y - p.y) <= slop { return .rotate }
+        }
+        return grab(at: upright(p), handles: floatingHandles().map(upright), box: floatingFrame)
     }
 
     /// Moves or scales the floating pixels. Movement snaps to whole pixels so
@@ -1194,11 +1250,22 @@ final class ToolEngine {
         switch floatingGrab {
         case .none:
             return
+        case .rotate:
+            var turn = angle(from: floatingCentre(start), to: p) - floatingGrabAngle
+            if modifiers.contains(.shift) {
+                // Shift snaps to 15°, for uprighting something by eye.
+                let step = CGFloat.pi / 12
+                turn = (turn / step).rounded() * step
+            }
+            floatingAngle = floatingDragAngle + turn
         case .move:
             let dx = (p.x - dragStart.x).rounded()
             let dy = (p.y - dragStart.y).rounded()
             floatingFrame = start.offsetBy(dx: dx, dy: dy)
         case .resize(let handle):
+            // Resizing happens in the box's own upright frame; the rotation is
+            // put back when the pixels are drawn.
+            let p = upright(p)
             // Work in signed edge offsets: CGRect standardises a negative size
             // away, so a rectangle cannot tell us the drag crossed its anchor.
             let movesLeft = [0, 6, 7].contains(handle)
@@ -1236,7 +1303,7 @@ final class ToolEngine {
     /// Keeps the selection outline on top of the floating pixels as they move.
     private func moveFloatingSelection() {
         guard floatingImage != nil else { return }
-        doc.selectionPath = CGPath(rect: floatingRect, transform: nil)
+        doc.selectionPath = floatingOutline()
         doc.onChange?()
     }
 
@@ -1247,10 +1314,13 @@ final class ToolEngine {
         guard let layer = doc.selectedLayer, let img = floatingImage else { return false }
         layer.context.saveGState()
         // Unscaled pixels are copied as they are; only a resize resamples.
-        layer.context.interpolationQuality = floatingIsUnscaled ? .none : settings.resampling.quality
+        // A turn resamples whatever the size says, so only upright, unscaled
+        // pixels get the straight copy.
+        layer.context.interpolationQuality = floatingIsUnscaled && floatingAngle == 0
+            ? .none : settings.resampling.quality
         drawFloating(img, in: layer.context)
         layer.context.restoreGState()
-        doc.selectionPath = CGPath(rect: floatingRect.intersection(doc.bounds), transform: nil)
+        doc.selectionPath = floatingOutline()
         floatingImage = nil
         floatingUndoSnapshot = nil
         floatingStartSelection = nil
@@ -1258,6 +1328,23 @@ final class ToolEngine {
         doc.commit(floatingTitle)
         onNeedsDisplay?()
         return true
+    }
+
+    /// The knob that turns the floating pixels, on a stalk off the top edge.
+    private func drawRotationKnob(in ctx: CGContext, scale: CGFloat) {
+        guard let knob = floatingRotationKnob() else { return }
+        let top = CGPoint(x: floatingFrame.midX, y: floatingFrame.maxY).applying(floatingTransform)
+        ctx.saveGState()
+        ctx.setLineWidth(1 / scale)
+        ctx.setStrokeColor(NSColor.black.cgColor)
+        ctx.move(to: top); ctx.addLine(to: knob); ctx.strokePath()
+        let r = 4 / scale
+        let box = CGRect(x: knob.x - r, y: knob.y - r, width: r * 2, height: r * 2)
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.fillEllipse(in: box)
+        ctx.setStrokeColor(NSColor.black.cgColor)
+        ctx.strokeEllipse(in: box)
+        ctx.restoreGState()
     }
 
     /// A direction line with a knob at each end, drawn dark-on-light so it
@@ -1287,6 +1374,12 @@ final class ToolEngine {
     /// Draws the floating pixels, mirroring them if a resize crossed an edge.
     private func drawFloating(_ image: CGImage, in ctx: CGContext) {
         ctx.saveGState()
+        if floatingAngle != 0 {
+            let c = floatingCentre(floatingFrame)
+            ctx.translateBy(x: c.x, y: c.y)
+            ctx.rotate(by: floatingAngle)
+            ctx.translateBy(x: -c.x, y: -c.y)
+        }
         if floatingFlippedX || floatingFlippedY {
             ctx.translateBy(x: floatingFrame.midX, y: floatingFrame.midY)
             ctx.scaleBy(x: floatingFlippedX ? -1 : 1, y: floatingFlippedY ? -1 : 1)
@@ -1378,10 +1471,12 @@ final class ToolEngine {
         }
         if let img = floatingImage {
             ctx.saveGState()
-            ctx.interpolationQuality = floatingIsUnscaled ? .none : settings.resampling.quality
+            ctx.interpolationQuality = floatingIsUnscaled && floatingAngle == 0
+                ? .none : settings.resampling.quality
             drawFloating(img, in: ctx)
             ctx.restoreGState()
             drawHandles(floatingHandles(), in: ctx, scale: scale)
+            drawRotationKnob(in: ctx, scale: scale)
         }
         if let s = session {
             let path = sessionPath(s)

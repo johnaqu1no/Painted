@@ -1927,6 +1927,88 @@ do {
           "and no resampling setting behind")
 }
 
+section("floating pixels can be turned")
+do {
+    let doc = Document(width: 40, height: 40, background: nil)
+    guard let layer = doc.selectedLayer else { fatalError("no layer") }
+    layer.fill(with: .white)
+    // One quadrant of the selection marked, so the turn is visible.
+    layer.context.setFillColor(NSColor.red.cgColor)
+    layer.context.fill(CGRect(x: 10, y: 20, width: 10, height: 10))
+
+    let settings = ToolSettings()
+    settings.tool = .moveSelectedPixels
+    let engine = ToolEngine(doc: doc, settings: settings)
+    doc.selectionPath = CGPath(rect: CGRect(x: 10, y: 10, width: 20, height: 20), transform: nil)
+
+    // Clicking with the tool lifts the pixels.
+    engine.mouseDown(at: CGPoint(x: 20, y: 20), rightButton: false, modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 20, y: 20), modifiers: [])
+    check(engine.hasFloatingPixels, "the selection floats")
+    near(engine.floatingRotation, 0, 0.001, "and starts upright")
+
+    guard let knob = engine.floatingRotationKnob() else {
+        check(false, "the rotation knob is there to grab"); fatalError("no knob")
+    }
+    check(knob.y > engine.floatingRect.maxY, "the knob sits off the top edge")
+
+    // Grab the knob and swing a quarter turn counter-clockwise.
+    let centre = CGPoint(x: engine.floatingRect.midX, y: engine.floatingRect.midY)
+    engine.mouseDown(at: knob, rightButton: false, modifiers: [])
+    engine.mouseDragged(to: CGPoint(x: centre.x - 30, y: centre.y), modifiers: [])
+    near(engine.floatingRotation, .pi / 2, 0.01, "the knob turns the pixels")
+
+    // The outline follows the turn, so the ants sit on the pixels.
+    let outline = doc.selectionPath?.boundingBoxOfPath ?? .zero
+    near(outline.midX, centre.x, 1, "the outline stays centred on them")
+    near(outline.width, 20, 1.5, "and a square box is still square after a quarter turn")
+
+    engine.mouseUp(at: CGPoint(x: centre.x - 30, y: centre.y), modifiers: [])
+    check(engine.commitFloatingPixels(), "the turned pixels drop into the layer")
+
+    // The marked quadrant started top-left and a counter-clockwise turn puts
+    // it bottom-left.
+    func isRed(_ x: Int, _ y: Int) -> Bool {
+        guard let p = PixelOps.sample(layer, x: x, y: y) else { return false }
+        return p.r > 200 && p.g < 80
+    }
+    check(isRed(15, 15), "the marked corner has swung round to the bottom")
+    check(!isRed(15, 25), "and left where it was")
+    equal(doc.history.currentTitle, "Move Selected Pixels", "the turn is one undo step")
+}
+
+section("a turn can be snapped and undone")
+do {
+    let doc = Document(width: 40, height: 40, background: nil)
+    doc.selectedLayer?.fill(with: .white)
+    let settings = ToolSettings()
+    settings.tool = .moveSelectedPixels
+    let engine = ToolEngine(doc: doc, settings: settings)
+    doc.selectionPath = CGPath(rect: CGRect(x: 8, y: 8, width: 16, height: 24), transform: nil)
+    engine.mouseDown(at: CGPoint(x: 16, y: 20), rightButton: false, modifiers: [])
+    engine.mouseUp(at: CGPoint(x: 16, y: 20), modifiers: [])
+
+    guard let knob = engine.floatingRotationKnob() else {
+        check(false, "knob"); fatalError("no knob")
+    }
+    let centre = CGPoint(x: engine.floatingRect.midX, y: engine.floatingRect.midY)
+    engine.mouseDown(at: knob, rightButton: false, modifiers: [.shift])
+    // A little past a quarter turn, which shift should pull back to it.
+    let almost = CGFloat.pi / 2 + 0.12
+    engine.mouseDragged(to: CGPoint(x: centre.x + cos(almost + .pi / 2) * 30,
+                                    y: centre.y + sin(almost + .pi / 2) * 30),
+                        modifiers: [.shift])
+    let snapped = engine.floatingRotation
+    near((snapped / (.pi / 12)).rounded() * (.pi / 12), snapped, 0.001, "shift snaps to 15° steps")
+
+    // A taller-than-wide box turned on its side covers a wider outline.
+    let box = doc.selectionPath?.boundingBoxOfPath ?? .zero
+    check(box.width > 16, "the outline grows as the box turns")
+    engine.mouseUp(at: centre, modifiers: [])
+    engine.cancelFloatingPixels()
+    check(!engine.hasFloatingPixels, "cancelling puts them back")
+}
+
 section("text lands in the box it was given")
 do {
     let doc = Document(width: 120, height: 60, background: nil)
